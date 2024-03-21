@@ -6,7 +6,7 @@ from tinygrad.nn.state import get_state_dict
 from tinygrad.dtype import dtypes
 import json
 
-EXPORT_SUPPORTED_DEVICE = ["WEBGPU", "WEBGL", "CLANG", "CUDA", "GPU"]
+EXPORT_SUPPORTED_DEVICE = ["WEBGPU", "WEBGL", "CLANG", "CUDA", "GPU", "RUST"]
 web_utils = {
   "getTensorBuffer":
   """const getTensorBuffer = (safetensorBuffer, tensorMetadata) => {
@@ -76,6 +76,48 @@ def export_model_clang(functions:Dict[str,str], statements:Dict[str,Tuple[str,in
   cprog += [f"float {name}[{len}];" if name not in bufs_to_save else f"float *{name} = (float *){name}_data;" for name,(len,dtype,_key) in bufs.items() if name not in ['input', 'outputs']]
   cprog += list(functions.values())
   cprog += [f"void net({inputs}, {outputs}) {{"] + [f"{name}({', '.join(args)});" for (name, args, _global_size, _local_size) in statements] + ["}"]
+  return '\n'.join(cprog)
+
+def export_model_rust(functions:Dict[str,str], statements:Dict[str,Tuple[str,int,int]], bufs:Dict[str,Tuple[str,int,int]], bufs_to_save:Dict[str,Tensor], input_names:List[str], output_names:List[str]) -> str:
+  from tinygrad.runtime.ops_rust import RUST_PROGRAM_HEADER
+  type_map = {dtypes.float: "f32", dtypes.int: "i32"}
+  cprog = [RUST_PROGRAM_HEADER]
+
+  print("functions")
+  print("--------------------------")
+  print(functions)
+  print("--------------------------")
+  print("statements")
+  print("--------------------------")
+  print(statements)
+  print("--------------------------")
+  print("bufs")
+  print("--------------------------")
+  print(bufs)
+  print("--------------------------")
+  print("bufs_to_save")
+  print("--------------------------")
+  print(bufs_to_save)
+  print("--------------------------")
+  print("input_names")
+  print("--------------------------")
+  print(input_names)
+  print("--------------------------")
+  
+
+  for name,cl in bufs_to_save.items():
+    raise Exception("not implemented")
+  inputs = ", ".join([f"{name}: &[{type_map[dtype]}]" for name, (len, dtype, _key) in bufs.items() if name in input_names])
+  outputs = ", ".join([f"{name}: &mut [{type_map[dtype]}]" for name, (len, dtype, _key) in bufs.items() if name in output_names])
+  
+  cprog += [f"struct Net {{"] + [f"      {name}: [{type_map[dtype]}; {len}]," if name not in bufs_to_save else f"bufs_to_save not implemented {__file__}" for name,(len,dtype,_key) in bufs.items() if name not in input_names+output_names] + ["}",""]
+  cprog += ["impl Net {","  fn new() -> Self {","    Net {"] + [f"      {name}: [0.0; {len}]," if name not in bufs_to_save else f"bufs_to_save not implemented {__file__}" for name,(len,dtype,_key) in bufs.items() if name not in input_names+output_names] + ["    }","  }",""]
+  cprog += [f"  fn run(&mut self, {inputs}, {outputs}) {{"]
+  cprog += [f"    {name}({', '.join(args)});" for (name, args, _global_size, _local_size) in statements]
+  cprog += ["  }","}",""]
+
+  cprog += list(functions.values())
+
   return '\n'.join(cprog)
 
 def export_model_webgl(functions, statements, bufs, bufs_to_save, weight_names, input_names, output_names) -> str:
