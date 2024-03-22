@@ -284,6 +284,16 @@ def _make_hip_code_for_op():
     return cast_bf16
   return { k:wrapper(k,v) for k,v in {**CStyleLanguage().code_for_op, **code_for_op_hip}.items() }
 
+def _make_hip_code_for_op():
+  def wrapper(key, func):
+    def cast_bf16(*args):
+      if args[-1] == dtypes.bfloat16:
+        operands = tuple(f"(float)({arg})" for arg in (args[1:-1] if key is TernaryOps.WHERE else args[:-1]))
+        return f"(hip_bfloat16)({func(*(((args[0],) if key is TernaryOps.WHERE else ()) + operands), dtypes.float)})"
+      return func(*args)
+    return cast_bf16
+  return { k:wrapper(k,v) for k,v in {**CStyleLanguage().code_for_op, **code_for_op_hip}.items() }
+
 def _make_hip_dtype(base_type, name, cnt):
   elems, header = ', '.join(_nms[:cnt]), ', '.join([f"{base_type} {x}" for x in _nms[:cnt]])
   return f"typedef {base_type} {name}{cnt} __attribute__((ext_vector_type({cnt})));\n" + \
