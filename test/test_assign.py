@@ -115,6 +115,14 @@ class TestAssign(unittest.TestCase):
     new = a + (times_a-1).contiguous()
     np.testing.assert_allclose(new.numpy(), 4)
 
+  @unittest.expectedFailure
+  def test_assign_diamond_possible(self):
+    a = Tensor.ones(4).contiguous().realize()
+    times_a = a*3
+    a.assign(Tensor.full((4,), 2.).contiguous())
+    new = a + (times_a+1).contiguous()
+    np.testing.assert_allclose(new.numpy(), 6)
+
   def test_assign_diamond_alt(self):
     a = Tensor.ones(4).contiguous().realize()
     a.assign(Tensor.full((4,), 2.).contiguous())
