@@ -75,50 +75,25 @@ def export_model_clang(functions:Dict[str,str], statements:Dict[str,Tuple[str,in
   outputs = ", ".join([f'float* {output}' for output in output_names])
   cprog += [f"float {name}[{len}];" if name not in bufs_to_save else f"float *{name} = (float *){name}_data;" for name,(len,dtype,_key) in bufs.items() if name not in ['input', 'outputs']]
   cprog += list(functions.values())
-  cprog += [f"void net({inputs}, {outputs}) {{"] + [f"{name}({', '.join(args)});" for (name, args, _global_size, _local_size) in statements] + ["}"]
+  cprog += [f"void net({inputs}, {outputs}) {{"] + [f"  {name}({', '.join(args)});" for (name, args, _global_size, _local_size) in statements] + ["}"]
   return '\n'.join(cprog)
 
 def export_model_rust(functions:Dict[str,str], statements:Dict[str,Tuple[str,int,int]], bufs:Dict[str,Tuple[str,int,int]], bufs_to_save:Dict[str,Tensor], input_names:List[str], output_names:List[str]) -> str:
   from tinygrad.runtime.ops_rust import RUST_PROGRAM_HEADER
-  type_map = {dtypes.float: "f32", dtypes.int: "i32"}
-  cprog = [RUST_PROGRAM_HEADER]
-
-  print("functions")
-  print("--------------------------")
-  print(functions)
-  print("--------------------------")
-  print("statements")
-  print("--------------------------")
-  print(statements)
-  print("--------------------------")
-  print("bufs")
-  print("--------------------------")
-  print(bufs)
-  print("--------------------------")
-  print("bufs_to_save")
-  print("--------------------------")
-  print(bufs_to_save)
-  print("--------------------------")
-  print("input_names")
-  print("--------------------------")
-  print(input_names)
-  print("--------------------------")
-  
-
-  for name,cl in bufs_to_save.items():
-    raise Exception("not implemented")
-  inputs = ", ".join([f"{name}: &[{type_map[dtype]}]" for name, (len, dtype, _key) in bufs.items() if name in input_names])
-  outputs = ", ".join([f"{name}: &mut [{type_map[dtype]}]" for name, (len, dtype, _key) in bufs.items() if name in output_names])
-  
-  cprog += [f"struct Net {{"] + [f"      {name}: [{type_map[dtype]}; {len}]," if name not in bufs_to_save else f"bufs_to_save not implemented {__file__}" for name,(len,dtype,_key) in bufs.items() if name not in input_names+output_names] + ["}",""]
-  cprog += ["impl Net {","  fn new() -> Self {","    Net {"] + [f"      {name}: [0.0; {len}]," if name not in bufs_to_save else f"bufs_to_save not implemented {__file__}" for name,(len,dtype,_key) in bufs.items() if name not in input_names+output_names] + ["    }","  }",""]
-  cprog += [f"  fn run(&mut self, {inputs}, {outputs}) {{"]
-  cprog += [f"    {name}({', '.join(args)});" for (name, args, _global_size, _local_size) in statements]
-  cprog += ["  }","}",""]
-
-  cprog += list(functions.values())
-
-  return '\n'.join(cprog)
+  type_map = {dtypes.float: ["f32",4], dtypes.int: ["i32",4]}
+  rsprog = [RUST_PROGRAM_HEADER]
+  inputs = ", ".join([f"{name}: &[{type_map[dtype][0]}; {int(len/type_map[dtype][1])}]" for name, (len, dtype, _key) in bufs.items() if name in input_names])
+  outputs = ", ".join([f"{name}: &mut [{type_map[dtype][0]}; {int(len/type_map[dtype][1])}]" for name, (len, dtype, _key) in bufs.items() if name in output_names])
+  rsprog += [f"struct Net {{"] + [f"  {name}: [{type_map[dtype][0]}; {int(len/type_map[dtype][1])}]," for name,(len,dtype,_key) in bufs.items() if name not in input_names+output_names] + ["}",""]
+  rsprog += ["impl Net {","  fn new() -> Self {","    Net {"] + [f"      {name}: [0.0; {int(len/type_map[dtype][1])}]," for name,(len,dtype,_key) in bufs.items() if name not in input_names+output_names] + ["    }","  }",""]
+  rsprog += [f"  fn run(&mut self, {inputs}, {outputs}) {{"]
+  for (name, args, _, _) in statements:
+    params = ['&self.'+arg if arg not in input_names+output_names else arg for arg in args]
+    params[0] = params[0].replace('&self.', '&mut self.') # first arg is mutable
+    rsprog += [f"    {name}({', '.join(params)});"]
+  rsprog += ["  }","}",""]
+  rsprog += list(functions.values())
+  return '\n'.join(rsprog)
 
 def export_model_webgl(functions, statements, bufs, bufs_to_save, weight_names, input_names, output_names) -> str:
   header = f"""
@@ -351,17 +326,21 @@ const setupNet = async (device, safetensor) => {{
 }}
   """ + f"\n\nconst loadNet = async (device) => {{ return await fetch('net.safetensors').then(x => x.arrayBuffer()).then(x => setupNet(device, new Uint8Array(x))); }}"
 
-def export_model(model, target:str, *inputs):
-  assert Device.DEFAULT in EXPORT_SUPPORTED_DEVICE, "only WEBGPU, WEBGL, CLANG, CUDA, GPU, METAL are supported"
+def export_model(model, target:str, *inputs, save_weights=True):
+  assert Device.DEFAULT in EXPORT_SUPPORTED_DEVICE, "only WEBGPU, WEBGL, CLANG, RUST, CUDA, GPU, METAL are supported"
   run,special_names = jit_model(model, *inputs)
   functions, statements, bufs, bufs_to_save = compile_net(run, special_names)
   state = get_state_dict(model)
   weight_names = {id(x.lazydata.base.realized): name for name, x in state.items()}
   input_names = [name for _,name in special_names.items() if "input" in name]
   output_names = [name for _,name in special_names.items() if "output" in name]
+  if not save_weights:
+    bufs_to_save = {}
   prg = ""
   if target == "clang":
     prg = export_model_clang(functions, statements, bufs, bufs_to_save, input_names, output_names)
+  elif target == "rust":
+    prg = export_model_rust(functions, statements, bufs, bufs_to_save, input_names, output_names)
   elif target == "webgpu":
     prg = export_model_webgpu(functions, statements, bufs, bufs_to_save, weight_names, input_names, output_names)
   elif target == "webgl":
@@ -392,5 +371,4 @@ def export_model(model, target:str, *inputs):
         } for name, (size,dtype,_key) in bufs.items() if name not in ["input", "outputs"]
       }
     })
-
   return prg, {input:bufs[input][0] for input in input_names}, {output:bufs[output][0] for output in output_names}, state
