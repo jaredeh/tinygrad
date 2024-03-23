@@ -175,16 +175,28 @@ def uops_to_asm(lang:AssemblyLanguage, function_name:str, uops:UOpGraph) -> str:
           r[u] = [ssa(None, 'acc', lang.types[dtype.scalar()]) for _ in range(dtype.count)]
           for uu in r[u]: kk(f"mov.b{lang.types[dtype.scalar()][1:]} {uu}, {const(args, dtype.scalar())};")
         else: kk(f"mov.b{lang.types[dtype][1:]} {ssa(u, 'acc')}, {const(args, dtype)};")
+<<<<<<< HEAD
       elif uop is UOps.SPECIAL:
+=======
+      elif uop == UOps.SPECIAL:
+>>>>>>> f1e08044 (cheap less lines in ptx (#3890))
         assert args[1][0] != "i", "idx not supported"
         kk(f"mov.u32 %{args[1]}, {(lang.gid if args[1][0] == 'g' else lang.lid)[args[0]]};")
         r[u] = "%" + args[1]
         kernel = [f".reg .u32 %{args[1]};"] + kernel
+<<<<<<< HEAD
       elif uop is UOps.CONST:
         if dtype.count > 1: r[u] = [const(args, dtype.scalar(), mov=True) for _ in range(dtype.count)]
         else: r[u] = const(args, dtype, mov=True)
       elif uop is UOps.GEP: r[u] = r[vin[0]][u.arg]
       elif uop is UOps.LOAD:
+=======
+      elif uop == UOps.CONST:
+        if dtype.count > 1: r[u] = [const(args, dtype.scalar(), mov=True) for _ in range(dtype.count)]
+        else: r[u] = const(args, dtype, mov=True)
+      elif uop == UOps.GEP: r[u] = r[vin[0]][u.arg]
+      elif uop == UOps.LOAD:
+>>>>>>> f1e08044 (cheap less lines in ptx (#3890))
         assert vin[1].dtype is not None
         if dtype.count > 1:
           r[u] = [ssa(None, 'val', lang.types[dtype.scalar()]) for _ in range(dtype.count)]
@@ -202,7 +214,11 @@ def uops_to_asm(lang:AssemblyLanguage, function_name:str, uops:UOpGraph) -> str:
         assert vin[0].dtype is not None
         if dtype.count>1: r[u] = [r[x] for x in vin] # type: ignore
         else: cast(r[vin[0]], dtype, vin[0].dtype, bitcast=uop is UOps.BITCAST, u=u)
+<<<<<<< HEAD
       elif uop is UOps.DEFINE_LOCAL:
+=======
+      elif uop == UOps.DEFINE_LOCAL:
+>>>>>>> f1e08044 (cheap less lines in ptx (#3890))
         # TODO: we should sum these, and fetch 0xC000 from somewhere
         assert args[1]*dtype.itemsize <= 0xC000, "too large local"
         kk(*lang.render_local(ssa(u, 'local', lang.types[dtypes.ulong]), args[0], args[1], dtype))
