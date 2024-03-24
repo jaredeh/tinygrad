@@ -11,6 +11,7 @@ from tinygrad.codegen.uops import UOpGraph
 from dataclasses import dataclass
 
 if TYPE_CHECKING:
+  from tinygrad.lazy import LazyBuffer
   from tinygrad.codegen.linearizer import Linearizer
   from tinygrad.codegen.kernel import LinearizerOptions
 
@@ -285,4 +286,4 @@ class Compiled:
     return k
 
   @functools.lru_cache(None)    # pylint: disable=method-cache-max-size-none
-  def get_runner(self, *ast:LazyOp) -> CompiledASTRunner: return self.to_program(self.get_linearizer(*ast))
+  def get_runner(self, *ast:LazyOp, outputs:Tuple[LazyBuffer,...], inputs:Tuple[LazyBuffer,...]) -> CompiledASTRunner: return self.to_program(self.get_linearizer(*ast))
