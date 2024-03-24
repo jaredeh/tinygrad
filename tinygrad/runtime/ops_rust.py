@@ -14,7 +14,7 @@ RUST_PROGRAM_HEADER = ''
 
 class RustCompiler(Compiler):
   linearizer_opts = LinearizerOptions("RUST", supports_float4=False, has_local=False)
-  def render(self, name:str, uops) -> str: return uops_to_rust(RustLanguage(), name, uops)
+  def render(self, name:str, uops, outputs, inputs) -> str: return uops_to_rust(RustLanguage(), name, uops, outputs, inputs)
   def compile(self, src:str) -> bytes:
     with tempfile.NamedTemporaryFile(delete=False) as output_file:
       command = (f"rustc -Aunused_parens -Aunused_mut -O --crate-type=cdylib - -o {str(output_file.name)}").split()
