@@ -370,4 +370,5 @@ def export_model(model, target:str, *inputs, save_weights=True):
         } for name, (size,dtype,_key) in bufs.items() if name not in ["input", "outputs"]
       }
     })
+
   return prg, {input:bufs[input][0] for input in input_names}, {output:bufs[output][0] for output in output_names}, state
