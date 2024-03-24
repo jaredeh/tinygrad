@@ -10,6 +10,7 @@ from tinygrad.buffer import Buffer, BufferOptions
 from tinygrad.codegen.uops import UOpGraph
 
 if TYPE_CHECKING:
+  from tinygrad.lazy import LazyBuffer
   from tinygrad.codegen.linearizer import Linearizer
 
 # **************** Device ****************
@@ -250,4 +251,4 @@ class Compiled:
     return k
 
   @functools.lru_cache(None)    # pylint: disable=method-cache-max-size-none
-  def get_runner(self, *ast:LazyOp) -> CompiledASTRunner: return self.to_program(self.get_linearizer(*ast))
+  def get_runner(self, *ast:LazyOp, outputs:Tuple[LazyBuffer,...], inputs:Tuple[LazyBuffer,...]) -> CompiledASTRunner: return self.to_program(self.get_linearizer(*ast))
