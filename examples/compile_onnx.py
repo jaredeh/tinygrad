@@ -13,7 +13,6 @@ import onnx
 import onnxruntime as ort
 from onnx.helper import tensor_dtype_to_np_dtype
 
-
 def onnx_get_dimensions(onnx_tensor):
   tensor_data_type = onnx_tensor.type.tensor_type.elem_type
   data_type_str = tensor_dtype_to_np_dtype(tensor_data_type)
@@ -22,7 +21,6 @@ def onnx_get_dimensions(onnx_tensor):
     if dim.dim_value:
       shape["dims"].append(dim.dim_value)
   return shape
-
 
 def onnx_get_shapes(onnx_model):
   inputs_shape = []
@@ -43,14 +41,12 @@ def onnx_get_shapes(onnx_model):
     raise Exception("Output shape assumed to be [1, N]")
   return inputs_shape, outputs_shape
 
-
 def onnx_test(onnx_model, np_input):
   s = onnx_model.SerializeToString()
   session = ort.InferenceSession(s)
   input_name = session.get_inputs()[0].name
   output = session.run(None, {input_name: np_input})
   return output[0][0]
-
 
 def onnx_load_model(model_path):
   if model_path is None:
@@ -73,7 +69,6 @@ def onnx_load_model(model_path):
     raise Exception(f"Model file {model_path} not found")
   return onnx.load(model_path)
 
-
 # converts ONNX model to Tinygrad compatible model
 class TinyOnnx:
   def __init__(self, onnx_model):
@@ -84,12 +79,10 @@ class TinyOnnx:
   def forward(self, x):
     return self.run_onnx({self.xname: x}, debug=False)[self.yname]
 
-
 def tiny_model_run(tiny_model, the_input):
   run, _ = jit_model(tiny_model, the_input)
   output = run(the_input)
   return output[0].numpy()[0]
-
 
 def clang_compile(c_code, bufs, bufs_to_save, inputs, outputs, save_files):
   dtype_map = {dtypes.float: ("float",4)}
@@ -148,7 +141,6 @@ def clang_compile(c_code, bufs, bufs_to_save, inputs, outputs, save_files):
   # add test weights
   subprocess.check_output(['clang', '-O2', '-lm', '-fPIC', '-x', 'c', '-', '-o', "/tmp/compile_onnx_test"], input=prg.encode('utf-8'))
 
-
 def rust_compile(rs_code, bufs, bufs_to_save, inputs, outputs, save_files):
   dtype_map = {dtypes.float: ("f32",4)}
   input_name = list(inputs.keys())[0]
@@ -200,7 +192,6 @@ def rust_compile(rs_code, bufs, bufs_to_save, inputs, outputs, save_files):
   rustc_cmd += ['-O', '-', '-o', "/tmp/compile_onnx_test"]
   subprocess.check_output(rustc_cmd, input=prg.encode('utf-8'))
 
-
 def compile_src(tiny_model, device, the_input, save_files, save_weights):
   src_code, inputs, outputs, _ = export_model(tiny_model, device, the_input, save_weights=save_weights)
   run, special_names = jit_model(tiny_model, the_input)
@@ -212,12 +203,10 @@ def compile_src(tiny_model, device, the_input, save_files, save_weights):
   else:
     raise Exception(f"Unknown device {device}")
 
-
 def compiled_test(the_input):
   c_input = '\n'.join(["%f" % x for x in the_input[0].numpy()])+"\n"
   c_output = [float(x) for x in subprocess.check_output(["/tmp/compile_onnx_test"], input=c_input.encode('utf-8')).decode('utf-8').strip().split(" ")]
   return c_output
-
 
 if __name__ == "__main__":
   import argparse
