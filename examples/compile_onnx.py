@@ -158,7 +158,7 @@ def rust_compile(rs_code, bufs, bufs_to_save, inputs, outputs, save_files):
   input_len = int(inputs[input_name]//input_type[1])
   output_len = int(outputs[output_name]//output_type[1])
   weights_type = input_type
-  
+
   rsprog = ["use std::fs::File;","use std::io::{self, Read};",""]
   rsprog += [rs_code,""]
 
@@ -221,7 +221,7 @@ def compiled_test(the_input):
 
 if __name__ == "__main__":
   import argparse
-  SUPPORTED_LANGUAGES = ["rust", "clang"] 
+  SUPPORTED_LANGUAGES = ["rust", "clang"]
 
   parser = argparse.ArgumentParser()
   parser.add_argument("-m", "--model", type=str, help="Path to onnx model file")
