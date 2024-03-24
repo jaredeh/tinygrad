@@ -1,4 +1,5 @@
-# An example to compile an ONNX model into code and test it
+# Use tinygrad to compile an ONNX model into code and test it
+# will write the generated code to model.rs or model.c plus a test program to model_test.rs or model_test.c
 
 import os, sys
 import numpy as np
@@ -135,7 +136,7 @@ def clang_compile(c_code, bufs, bufs_to_save, inputs, outputs, save_files):
   prg = '\n'.join(cprog)
 
   if save_files:
-    with open("clang_model_test.c", "w") as f:
+    with open("model_test.c", "w") as f:
         f.write(prg)
 
   # add test weights
@@ -182,7 +183,7 @@ def rust_compile(rs_code, bufs, bufs_to_save, inputs, outputs, save_files):
   prg = '\n'.join(rsprog)
 
   if save_files:
-    with open("rust_model_test.rs", "w") as f:
+    with open("model_test.rs", "w") as f:
         f.write(prg)
 
   # Compile the source
@@ -215,7 +216,7 @@ if __name__ == "__main__":
   parser = argparse.ArgumentParser()
   parser.add_argument("-m", "--model", type=str, help="Path to onnx model file")
   parser.add_argument("--notest", action="store_true", help="Don't test the generated code")
-  parser.add_argument("-s","--save", action="store_true", help="Save the generated src code")
+  parser.add_argument("--nosave", action="store_true", help="Don't save the generated src code")
   parser.add_argument("-w", "--weights", action="store_true", help="Encode weights in the generated src code")
   parser.add_argument("-l", "--language", type=str, default="clang", help=f"Device to compile for, one of {SUPPORTED_LANGUAGES}")
   args = parser.parse_args()
@@ -223,8 +224,8 @@ if __name__ == "__main__":
   # Set up the device/language settings
   if args.language not in SUPPORTED_LANGUAGES:
     raise Exception(f"Example only supports '{SUPPORTED_LANGUAGES}' not {args.language}")
-  if not args.save and args.notest:
-    raise Exception("Can't do --notest without --save, nothing to do")
+  if args.nosave and args.notest:
+    raise Exception("Can't do --notest with --nosave, nothing to do")
   os.environ[args.language.upper()] = "1"
   Device.DEFAULT = args.language.upper()
   print(f"Compiling for {args.language}", file=sys.stderr)
@@ -250,14 +251,14 @@ if __name__ == "__main__":
     np.testing.assert_allclose(onnx_output, tiny_output, atol=1e-5, rtol=1e-5)
 
     # compile and run the generated code
-    compile_src(tiny_model, args.language, the_input, args.save, args.weights)
+    compile_src(tiny_model, args.language, the_input, not args.nosave, args.weights)
     compiled_output = compiled_test(the_input)
     print(f"compiled: {compiled_output}", file=sys.stderr)
     np.testing.assert_allclose(onnx_output, compiled_output, atol=1e-5, rtol=1e-5)
     np.testing.assert_allclose(tiny_output, compiled_output, atol=1e-5, rtol=1e-5)
     print("Passed all tests")
 
-  if args.save:
+  if not args.nosave:
     print("Saving src code", file=sys.stderr)
     src_code = export_model(tiny_model, args.language, the_input, save_weights=args.weights)
     srcfilename = "model.rs" if args.language == "rust" else "model.c"
