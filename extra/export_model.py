@@ -334,8 +334,7 @@ def export_model(model, target:str, *inputs, save_weights=True):
   weight_names = {id(x.lazydata.base.realized): name for name, x in state.items()}
   input_names = [name for _,name in special_names.items() if "input" in name]
   output_names = [name for _,name in special_names.items() if "output" in name]
-  if not save_weights:
-    bufs_to_save = {}
+  if not save_weights: bufs_to_save = {}
   prg = ""
   if target == "clang":
     prg = export_model_clang(functions, statements, bufs, bufs_to_save, input_names, output_names)
