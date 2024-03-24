@@ -14,7 +14,7 @@ RUST_PROGRAM_HEADER = ''
 
 class RustCompiler(Compiler):
   linearizer_opts = LinearizerOptions("RUST", supports_float4=False, has_local=False)
-  def render(self, name:str, uops, outputs, inputs) -> str: return uops_to_rust(RustLanguage(), name, uops, outputs, inputs)
+  def render(self, name:str, uops, outputs=[], inputs=[]) -> str: return uops_to_rust(RustLanguage(), name, uops, outputs, inputs)
   def compile(self, src:str) -> bytes:
     with tempfile.NamedTemporaryFile(delete=False) as output_file:
       command = (f"rustc -Aunused_parens -Aunused_mut -O --crate-type=cdylib - -o {str(output_file.name)}").split()
@@ -41,7 +41,7 @@ class RustDevice(Compiled):
     ops, mem = k.uops.flops_mem()
     run_count = prod((k.global_size if k.global_size else []) + (k.local_size if k.local_size else []))
     # NOTE: we use min here to ignore the indexing FLOPS
-    ret = CompiledASTRunner(k.name, self.compiler.render(to_function_name(k.name), k.uops, outputs, inputs), self.dname, k.global_size, k.local_size,
+    ret = CompiledASTRunner(k.name, self.compiler.render(to_function_name(k.name), k.uops, outputs=outputs, inputs=inputs), self.dname, k.global_size, k.local_size,
                             k.uops.vars(), min(info.flops, ops * run_count), min(info.mem_estimate, mem * run_count), outcount=len(k.outbufs))
     return ret
 
