@@ -51,8 +51,6 @@ class RustLanguage(NamedTuple):
     if len(x) != 1:
       raise NotImplementedError("vectorized cast not implemented in rust")
     if src_dtype[0] is not None and src_dtype[0] == var_dtype: return x[0] # no cast needed
-    import sys
-    print(f"casting {x[0]} from {src_dtype[0]} to {var_dtype} {self.detect_bool(x[0])}", file=sys.stderr)
     if var_dtype is dtypes.bool: return f"({x[0]} != { '0.0' if src_dtype[0] is dtypes.float else '0' })"
     return f"({x[0]}{' as usize' if dtypes.is_float(var_dtype) and (self.detect_bool(x[0]) or src_dtype[0] is dtypes.bool) else ''} as {self.render_dtype(var_dtype)})"
 
@@ -155,7 +153,6 @@ def uops_to_rust(lang:RustLanguage, function_name:str, uops:UOpGraph, outputs, i
       elif uop is UOps.DEFINE_GLOBAL:
         assert len(bufs) == args[0], f"missed a global buffer {len(bufs)} {args}"
         assert len(bufs) < len(bufsizes), f"more buffers than we have sizes for len(bufs): {len(bufs)} len(bufsizes):{len(bufsizes)}"
-        if DEBUG > 0 and args[3] != bufsizes[len(bufs)]: print(f"warning: buffer size mismatch {args[3]} {bufsizes[len(bufs)]}")
         bufs.append((args[1], (dtype,args[2],bufsizes[len(bufs)])))
         r[u] = args[1]
       elif uop is UOps.DEFINE_ACC: kk(f"let mut {ssa(u,'acc')} = {lang.render_const(args, dtype)} as {lang.render_dtype(dtype)};")
