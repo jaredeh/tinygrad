@@ -9,7 +9,6 @@ from tinygrad.codegen.uops import UOpGraph
 
 RUST_TYPE_MAP = {dtypes.float: "f32", dtypes.int: "i32", dtypes.bool: "bool"}
 
-
 class RustLanguage(NamedTuple):
   kernel_prefix: str = '#[no_mangle]\npub extern "C" '
   buffer_prefix: str = ""
