@@ -59,6 +59,14 @@ def run_linearizer(lin: Linearizer, rawbufs=None, var_vals=None):
     return "COMPILE_ERROR"
 
   try:
+    print(f"len(rawbufs): {len(rawbufs)}")
+    print(f"rawbufs: {rawbufs}")
+    print(f"type(rawbufs): {type(rawbufs)}")
+    print()
+    for b in list(rawbufs):
+      print(f"  {b.size} {b.dtype} {b}")
+    print(f"var_vals: {var_vals}")
+    raise
     prg(rawbufs, var_vals, wait=True, do_update_stats=False)
   except Exception:
     traceback.print_exc()
