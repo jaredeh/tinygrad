@@ -19,7 +19,6 @@ def helper_test_lin(lin: Linearizer, opts, failed_platforms, rtol=1e-2, atol=1e-
 
   for opt in opts:
     try:
-      print(f"testing {opt} on {Device.DEFAULT}")
       lin.apply_opt(opt)
     except KernelOptError:
       # it's considered fixed if we invalidated the opts
@@ -193,7 +192,7 @@ class TestLinearizerFailures(unittest.TestCase):
       [Opt(op=OptOps.GROUP, axis=0, amt=8), Opt(op=OptOps.UNROLL, axis=1, amt=4), Opt(op=OptOps.LOCAL, axis=0, amt=16), Opt(op=OptOps.UPCAST, axis=0, amt=0)],
     ]
     for opts in all_failing_opts:
-      helper_test_lin(Linearizer(ast), opts, failed_platforms=["METAL", "GPU", "HSA", "CUDA"])
+      helper_test_lin(Linearizer(ast), opts, failed_platforms=[])
 
   # COMPARE_ERROR from GPT2 kernel - just the first element off
   # testing ast 41
