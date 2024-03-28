@@ -26,6 +26,7 @@ def helper_test(nm, gen, model, max_memory_allowed, max_kernels_allowed, all_jit
     Device[Device.DEFAULT].synchronize()
     tms.append(time.perf_counter_ns() - st)
   mem_used = GlobalCounters.mem_used - global_mem_used
+  print(f"{nm}: GlobalCounters.mem_used={GlobalCounters.mem_used} global_mem_used={global_mem_used} mem_used={mem_used}")
 
   # TODO: jit should expose this correctly with graph
   kernels_used = len(model.jit_cache) if hasattr(model, "jit_cache") else None

@@ -80,7 +80,8 @@ def export_model_clang(functions:Dict[str,str], statements:Dict[str,Tuple[str,in
 
 def export_model_rust(functions:Dict[str,str], statements:Dict[str,Tuple[str,int,int]], bufs:Dict[str,Tuple[str,int,int]], bufs_to_save:Dict[str,Tensor], input_names:List[str], output_names:List[str]) -> str:
   from tinygrad.runtime.ops_rust import RUST_PROGRAM_HEADER
-  type_map = {dtypes.float: ["f32",4], dtypes.int: ["i32",4]}
+  from tinygrad.renderer.rust import RUST_TYPE_MAP
+  type_map = RUST_TYPE_MAP
   rsprog = [RUST_PROGRAM_HEADER]
   inputs = ", ".join([f"{name}: &[{type_map[dtype][0]}; {int(len/type_map[dtype][1])}]" for name, (len, dtype, _key) in bufs.items() if name in input_names])
   outputs = ", ".join([f"{name}: &mut [{type_map[dtype][0]}; {int(len/type_map[dtype][1])}]" for name, (len, dtype, _key) in bufs.items() if name in output_names])

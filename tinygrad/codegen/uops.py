@@ -148,11 +148,12 @@ class UOpGraph:
 
   def add(self, uop:UOps, dtype:Optional[DType]=None, vin:Tuple[UOp, ...]=tuple(), arg:Any=None, cachable=True, insert_before=None,
           simplify=True) -> UOp:
+    print(f"add {uop} {dtype} {vin} {arg}")
     ret = UOp(uop, dtype, vin, arg)
     if simplify and (rewritten:=constant_folder.rewrite(ret)) is not None:
       if rewritten in self.uops: return rewritten  # ignore cachable
       ret = rewritten
-    key = (ret.uop, ret.dtype, ret.vin, ret.arg)
+    key = (ret.uop, ret.dtype, ret.vin, ret.arg if ret.uop is not UOps.DEFINE_GLOBAL else (ret.arg[0],ret.arg[1],ret.arg[2]))
     if insert_before is None: insert_before = len(self.uops)
     # check if the cached expr is valid with the given insert place.
     if cachable and (expr:=self.saved_exprs.get(key, None)) is not None and self.uops.index(expr) <= insert_before: return expr

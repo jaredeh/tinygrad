@@ -8,7 +8,10 @@ CLANG_PROGRAM_HEADER = '#include <math.h>\n#define max(x,y) ((x>y)?x:y)\n#define
 
 class ClangCompiler(Compiler):
   linearizer_opts = LinearizerOptions("CLANG", supports_float4=False, has_local=False)
-  def render(self, name:str, uops) -> str: return uops_to_cstyle(CStyleLanguage(buffer_suffix=" restrict"), name, uops)
+  def render(self, name:str, uops) -> str:
+    a = uops_to_cstyle(CStyleLanguage(buffer_suffix=" restrict"), name, uops)
+    print(a, file=open(f"/tmp/tinygrad/{name}.c", "w"))
+    return a
   def compile(self, src:str) -> bytes:
     # TODO: remove file write. sadly clang doesn't like the use of /dev/stdout here
     with tempfile.NamedTemporaryFile(delete=True) as output_file:
