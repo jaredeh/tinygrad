@@ -2,7 +2,8 @@ import ctypes, subprocess, pathlib, tempfile
 from tinygrad.device import Compiled, MallocAllocator, Compiler
 from tinygrad.helpers import cpu_time_execution, prod, to_function_name
 from tinygrad.codegen.kernel import LinearizerOptions
-from tinygrad.renderer.rust import uops_to_rust, RustLanguage
+from tinygrad.renderer.rust2 import RustLanguage2, uops_to_rust2
+from tinygrad.renderer.rust import RustLanguage
 from tinygrad.ops import LazyOp, get_lazyop_info
 from tinygrad.device import CompiledASTRunner
 from tinygrad.lazy import LazyBuffer
@@ -15,7 +16,8 @@ RUST_PROGRAM_HEADER = ''
 class RustCompiler(Compiler):
   linearizer_opts = LinearizerOptions("RUST", supports_float4=False, has_local=False)
   def render(self, name:str, uops, outputs=[], inputs=[]) -> str:
-    a = uops_to_rust(RustLanguage(), name, uops, outputs, inputs)
+    a = RustLanguage().uops_to_code(name, uops, outputs, inputs)
+    #a = uops_to_rust2(RustLanguage(), name, uops, outputs, inputs)
     print(a, file=open(f"/tmp/tinygrad/{name}.rs", "w"))
     return a
   def compile(self, src:str) -> bytes:

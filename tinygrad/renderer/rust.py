@@ -7,6 +7,7 @@ from tinygrad.helpers import strip_parens, getenv, DEBUG
 from tinygrad.dtype import ImageDType, dtypes, DType, PtrDType
 from tinygrad.codegen.uops import UOpGraph
 from functools import reduce
+from tinygrad.renderer.base import BaseLanguage
 import operator
 
 import sys
@@ -66,22 +67,10 @@ def do_add(a,b,dtype):
   #f"({a} || {b})" if dtype is dtypes.bool else f"({add_parens(rust_cast(a,to_signed(dtype)))}+{b})" if detect_neg(b) and is_unsigned(dtype) else f"({a}+{b})"
 
 
-class RustLanguage(NamedTuple):
+class RustLanguage(BaseLanguage):
   kernel_prefix: str = '#[no_mangle]\npub extern "C" '
-  buffer_prefix: str = ""
-  buffer_suffix: str = ""
-  smem_align: str = ""
-  smem_prefix: str = ""
-  smem_prefix_for_cast: bool = True
-  arg_int_prefix: str = ""
-  barrier: str = ""
-  code_for_workitem: Dict[Union[Literal["g"], Literal["l"], Literal["i"]], Callable] = {}
-  global_max: List[int] = []
-  local_max: List[int] = []
-  extra_args: List[str] = []
-  float4: Optional[str] = None
-  uses_vload: bool = False
-  uses_ptr_arithmetic: bool = False
+  indent="  "
+  end_token: str = "}"
   type_map: Dict[DType, str] = RUST_TYPE_MAP
   code_for_op: Dict = {
     UnaryOps.NEG: lambda x,dtype: f"(!{x})" if dtype is dtypes.bool else f"(-{x})", UnaryOps.SQRT: lambda x,dtype: f"{add_parens(rust_cast(x,dtype))}.sqrt()",
@@ -124,139 +113,91 @@ class RustLanguage(NamedTuple):
   def render_load(self, output_dtype, buf_name, buf_dtype, idx, local=False) -> str:
     return f"{buf_name}[{self.render_index(idx)}]"
 
-  def render_kernel(self, function_name:str, kernel:List[str], bufs:List[Tuple[str,Tuple[DType,bool,bool,int]]], uops:UOpGraph, prefix=None) -> str:
-    print(f"render_kernel function_name: {function_name} kernel: {kernel} bufs: {bufs} prefix: {prefix}", file=sys.stderr)
-    for name,a in bufs:
+  # def render_kernel(self, function_name:str, kernel:List[str], bufs:List[Tuple[str,Tuple[DType,bool,bool,int]]], uops:UOpGraph, prefix=None) -> str:
+  #   print(f"render_kernel function_name: {function_name} kernel: {kernel} bufs: {bufs} prefix: {prefix}", file=sys.stderr)
+  #   for name,a in bufs:
+  #     print(f"render_kernel name: {name} a: {a}", file=sys.stderr)
+  #   buftypes = []
+  #   for name,(dtype,mutable,var,size) in bufs:
+  #     if var:
+  #       buftypes.append((name,render_dtype(dtype)))
+  #     else:
+  #       buftypes.append((name,("&mut " if mutable else "&")+"["+render_dtype(dtype)+f"; {size}]"))
+  #   prg = ''.join([f"{self.kernel_prefix}fn {function_name}(",] +
+  #   [', '.join([f'{name}: {t}' for name,t in buftypes])] +
+  #   [") {\n"] + ['\n'.join(kernel), "\n}"])
+  #   return prg if prefix is None else "\n".join(prefix)+f"\n{prg}"
+
+  def render_kernel(self, function_name:str, uops:UOpGraph) -> str:
+    print(f"render_kernel function_name: {function_name} kernel: {self.kernel} bufs: {self.bufs}", file=sys.stderr)
+    for name,a in self.bufs:
       print(f"render_kernel name: {name} a: {a}", file=sys.stderr)
     buftypes = []
-    for name,(dtype,mutable,var,size) in bufs:
+    for name,(dtype,mutable,var,size) in self.bufs:
       if var:
         buftypes.append((name,render_dtype(dtype)))
       else:
-        buftypes.append((name,("&mut " if mutable else "&")+self.buffer_prefix+"["+render_dtype(dtype)+f"; {size}]"+self.buffer_suffix))
-    #buftypes = [(name,("&mut " if mutable else "&")+self.buffer_prefix+"["+render_dtype(dtype)+f"; {size}]"+self.buffer_suffix) ]
+        buftypes.append((name,("&mut " if mutable else "&")+"["+render_dtype(dtype)+f"; {size}]"))
     prg = ''.join([f"{self.kernel_prefix}fn {function_name}(",] +
-    [', '.join([f'{name}: {t}' for name,t in buftypes] + self.extra_args)] +
-    [") {\n"] + ['\n'.join(kernel), "\n}"])
-    return prg if prefix is None else "\n".join(prefix)+f"\n{prg}"
+    [', '.join([f'{name}: {t}' for name,t in buftypes])] +
+    [") {\n"] + ['\n'.join(self.kernel), "\n}"])
+    return prg
 
   def render_index(self, idx:str) -> str:
     return f"({idx}) as usize" if detect_expression(idx) else f"{idx} as usize"
 
-  # returns a str statement that does the store
   def render_store(self, buf_name:str, buf_dtype:DType, var_name:str, var_dtype:DType, idx:str, idx_dtype:DType, local=False) -> str:
-    #return f"{buf_name}[{self.render_index(idx)}] = {var_name} as {render_dtype(buf_dtype)};"
     print(f"render_store buf_name: {buf_name} buf_dtype: {buf_dtype} var_name: {var_name} var_dtype: {var_dtype} idx: {idx} idx_dtype: {idx_dtype} local: {local}", file=sys.stderr)
     return f"{buf_name}[{rust_cast(idx,idx_dtype,idx=True)}] = {rust_cast(var_name,buf_dtype,var_dtype)};"
 
-  def render_local(self, name:str, dtype:DType, size:int): return self.smem_align + self.smem_prefix + f"{dtype.name} {name}[{size}];"
+  def render_local(self, name:str, dtype:DType, size:int): return f"{dtype.name} {name}[{size}];"
   def render_dtype(self, dtype:DType) -> str: return render_dtype(dtype)
   def render_alu(self, buf_name:str, buf_dtype:DType, var_name:str, var_dtype:DType) -> str:
     return f"let {buf_name}:{render_dtype(buf_dtype)} = {var_name}; //{var_dtype} {buf_dtype}" if not var_dtype is dtypes.bool else f"let {buf_name} = {var_name}; //{var_dtype} {buf_dtype}"
 
-  
-def print_uop_graph(uop_graph):
-  print("uop graph:")
-  for u in uop_graph:
-    uop,dtype,vin,args = u.uop,u.dtype,u.vin,u.arg
-    print(f"  {uop} {dtype} {vin} {args}")
+  def render_loop(self, u) -> str:
+    print(f"render_loop u: {u}", file=sys.stderr)
+    print(f"ssa: {self.ssa(u,'ridx')}", file=sys.stderr)
+    print(f"r: {self.r}", file=sys.stderr)
+    return f"for {(expr := self.ssa(u,'ridx'))} in {self.r[u.vin[0]]}..{self.r[u.vin[1]]} {{"
 
-def uops_to_rust(lang:RustLanguage, function_name:str, uops:UOpGraph, outputs, inputs) -> str:
-  kernel = []
-  bufsizes = [b.size for b in outputs+inputs]
-  maxbufsize = 0 if len(bufsizes) == 0 else max(bufsizes)
-  bufs: List[Tuple[str, Tuple[DType, bool, int]]] = []
-  depth = 1
-  print(f"outputs: {outputs} inputs: {inputs} bufsizes: {bufsizes}")
-  print_uop_graph(uops)
-  def kk(s): kernel.append("  "*depth+s)
+  # def uop_store(self, u):
+  #   vin = u.vin
+  #   assert vin[0].dtype is not None and vin[2].dtype is not None
+  #   if len(vin) > 3: self.kk(f"if ({self.r[vin[3]]}) {{")
+  #   self.kk(self.render_store(self.r[vin[0]], vin[0].dtype, self.r[vin[2]], vin[2].dtype, strip_parens(self.r[vin[1]]), vin[1].dtype, vin[0].uop is UOps.DEFINE_LOCAL))
+  #   if len(vin) > 3: self.kk("}")
 
-  c: DefaultDict[str, int] = defaultdict(int)
-  r: Dict[UOp, str] = {}
-  def ssa(u, prefix="t"):
-    nonlocal c, r
-    ret = f"{prefix}{c[prefix]}"
-    if u is not None: r[u] = ret
-    c[prefix] += 1
-    return ret
+  def uop_alu(self, u):
+    if u.arg in {BinaryOps.ADD,BinaryOps.MUL,BinaryOps.XOR}: operands = [strip_parens(self.r[v]) if v.arg == u.arg else self.r[v]for v in u.vin]
+    else: operands = [self.r[v] for v in u.vin]
+    val = self.code_for_op[u.arg](*operands, u.dtype)
+    assert self.child_count[u] != 0, f"childless ALU op found {u}"
+    if self.child_count[u] <= 1 and u.arg != BinaryOps.MAX and not getenv("EXPAND_SSA"): self.r[u] = val
+    else: self.kk(self.render_alu(self.ssa(u,'alu'),u.dtype,val,u.vin[0].dtype))
 
-  child_count = Counter(v for ru in uops for v in ru.vin)
+  def uop_load(self, u):
+    val = self.render_load(u.dtype, self.r[u.vin[0]], u.vin[0].dtype, strip_parens(self.r[u.vin[1]]), u.vin[0].uop is UOps.DEFINE_LOCAL)
+    if len(u.vin) > 3: val = self.code_for_op[TernaryOps.WHERE](self.r[u.vin[2]], val, self.r[u.vin[3]], u.dtype)
+    self.kk(f"let {self.ssa(u,'val')} = {val};")
 
-  # #if len(bufsizes) == 0: maxbufsize = max([u.arg for u in [u for i,u in uops() if u.uop is UOps.CONST] if isinstance(u.arg, int)])+1
-  # if len(bufsizes) == 0:
-  #   c = []
-  #   d = [u.vin for i,u in enumerate(uops) if u.uop is UOps.LOOP and len(u.vin) == 2]
-  #   print(f"d: {d}" )
-  #   for a in d:
-  #     if isinstance(a[1].arg, int):
-  #       c.append(a)
-  #     else
-  #   #     if len(a) == 0:
-  #   #       c.append(a)
-  #   #     else:
-  #   #       for b in a:
-  #   #       print(b.arg)
-  #   print(f"maxbufsize: {maxbufsize}")
+  def uop_cast(self, u, bitcast=False):
+    if len(u.vin) != 1: raise NotImplementedError("vectorized cast not implemented in rust")
+    val = self.render_cast(self.r[u.vin[0]], u.vin[0].dtype, u.dtype, bitcast=bitcast, force_cast=True)
+    if self.child_count[u] <= 1: self.r[u] = val
+    else: self.kk(f"let {self.ssa(u,'cast')} = {val};")
 
-  for u in uops:
-    uop,dtype,vin,args = u.uop,u.dtype,u.vin,u.arg
-    print(f"uop: {uop} dtype: {dtype} vin: {vin} args: {args}")
-    # these four uops don't have output dtypes
-    if uop is UOps.IF:
-      kk(f"if ({r[vin[0]]}) {{")
-      depth += 1
-    elif uop is UOps.BARRIER: kk(lang.barrier)
-    elif uop in {UOps.ENDLOOP, UOps.ENDIF}:
-      depth -= 1
-      kk("}")
-    elif uop is UOps.STORE:
-      assert vin[0].dtype is not None and vin[2].dtype is not None
-      if len(vin) > 3: kk(f"if ({r[vin[3]]}) {{")
-      kk(lang.render_store(r[vin[0]], vin[0].dtype, r[vin[2]], vin[2].dtype, strip_parens(r[vin[1]]), vin[1].dtype, vin[0].uop is UOps.DEFINE_LOCAL))
-      if len(vin) > 3: kk("}")
-    else:
-      assert dtype is not None, f"None dtype for uop {uop}"
-      if uop is UOps.LOOP:
-        kk(f"for {(expr := ssa(u,'ridx'))} in {r[vin[0]]}..{r[vin[1]]} {{")
-        depth += 1
-      elif uop is UOps.ALU:
-        if args in {BinaryOps.ADD,BinaryOps.MUL,BinaryOps.XOR}: operands = [strip_parens(r[v]) if v.arg == args else r[v]for v in vin]
-        else: operands = [r[v] for v in vin]
-        val = lang.code_for_op[args](*operands, dtype)
-        assert child_count[u] != 0, f"childless ALU op found {u}"
-        if child_count[u] <= 1 and args != BinaryOps.MAX and not getenv("EXPAND_SSA"): r[u] = val
-        else: kk(lang.render_alu(ssa(u,'alu'),dtype,val,vin[0].dtype))
-      elif uop is UOps.LOAD:
-        val = lang.render_load(dtype, r[vin[0]], vin[0].dtype, strip_parens(r[vin[1]]), vin[0].uop is UOps.DEFINE_LOCAL)
-        if len(vin) > 3: val = lang.code_for_op[TernaryOps.WHERE](r[vin[2]], val, r[vin[3]], dtype)
-        kk(f"let {ssa(u,'val')} = {val};")
-      elif uop is UOps.PHI:
-        kk(f"{r[vin[0]]} = {r[vin[1]]} as {lang.render_dtype(dtype)};")
-        r[u] = r[vin[0]]
-      elif uop in {UOps.CAST, UOps.BITCAST}:
-        if len(vin) != 1: raise NotImplementedError("vectorized cast not implemented in rust")
-        val = lang.render_cast(r[vin[0]], vin[0].dtype, dtype, bitcast=(uop is UOps.BITCAST), force_cast=True)
-        if child_count[u] <= 1: r[u] = val
-        else: kk(f"let {ssa(u,'cast')} = {val};")
-      elif uop is UOps.DEFINE_LOCAL:
-        kk(lang.render_local(args[0], dtype, args[1]))
-        r[u] = args[0]
-      elif uop is UOps.DEFINE_VAR:
-        bufs.append((args.expr, (dtype,False,True,0)))
-        r[u] = args.expr
-      elif uop is UOps.DEFINE_GLOBAL:
-        print (f"bufsizes: {bufsizes} bufs: {bufs} args: {args}")
-        assert len(bufs) == args[0], f"missed a global buffer {len(bufs)} {args}"
-        if len(bufs) < len(bufsizes): print(f"more buffers than we have sizes for len(bufs): {len(bufs)} len(bufsizes):{len(bufsizes)}")
-        if len(bufs) >= len(bufsizes): bufsizes.append(args[3] if len(args) > 3 else 1)
-        bufs.append((args[1], (dtype,args[2],False,bufsizes[len(bufs)])))
-        r[u] = args[1]
-      elif uop is UOps.DEFINE_ACC: kk(f"let mut {ssa(u,'acc')} = {lang.render_const(args, dtype)} as {lang.render_dtype(dtype)};")
-      elif uop is UOps.CONST: r[u] = lang.render_const(args, dtype) if args >= 0 else f"{lang.render_const(args, dtype)}"
-      elif uop is UOps.GEP:
-        assert vin[0].dtype is not None
-        from_ssa = vin[0].uop in {UOps.LOAD, UOps.WMMA, UOps.DEFINE_ACC}
-        r[u] = (r[vin[0]] if from_ssa else f"{(r[vin[0]])}") + (f"[{args}]" if vin[0].dtype.count > 4 else f".{'xyzw'[args]}")
-      else: raise RuntimeError(f"failed to render {uop}")
+  def uop_define_global(self, u):
+    print (f"self.bufsizes: {self.bufsizes} self.bufs: {self.bufs} arg: {u.arg}")
+    assert len(self.bufs) == u.arg[0], f"missed a global buffer {len(self.bufs)} {u.arg}"
+    if len(self.bufs) < len(self.bufsizes): print(f"more buffers than we have sizes for len(bufs): {len(self.bufs)} len(bufsizes):{len(self.bufsizes)}")
+    if len(self.bufs) >= len(self.bufsizes): self.bufsizes.append(u.arg[3] if len(u.arg) > 3 else 1)
+    self.bufs.append((u.arg[1], (u.dtype,u.arg[2],False,self.bufsizes[len(self.bufs)])))
+    self.r[u] = u.arg[1]
 
-  return lang.render_kernel(function_name, kernel, bufs, uops)
+  def uop_define_acc(self, u): self.kk(f"let mut {self.ssa(u,'acc')} = {self.render_const(u.arg, u.dtype)} as {self.render_dtype(u.dtype)};")
+  def uop_const(self, u):  self.r[u] = self.render_const(u.arg, u.dtype) if u.arg >= 0 else f"{self.render_const(u.arg, u.dtype)}"
+  def uop_gep(self, u):
+    assert u.vin[0].dtype is not None
+    from_ssa = u.vin[0].uop in {UOps.LOAD, UOps.WMMA, UOps.DEFINE_ACC}
+    self.r[u] = (self.r[u.vin[0]] if from_ssa else f"{(self.r[u.vin[0]])}") + (f"[{u.arg}]" if u.vin[0].dtype.count > 4 else f".{'xyzw'[u.arg]}")

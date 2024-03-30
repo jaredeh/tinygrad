@@ -6,16 +6,17 @@ from tinygrad.ops import UnaryOps, BinaryOps, TernaryOps
 from tinygrad.helpers import strip_parens, getenv, prod
 from tinygrad.dtype import ImageDType, dtypes, DType, PtrDType
 from tinygrad.codegen.uops import UOpGraph
+from tinygrad.renderer.base import BaseLanguage
 
-class CStyleLanguage(NamedTuple):
-  kernel_prefix: str = ""
+
+class CStyleLanguage(BaseLanguage):
   buffer_prefix: str = ""
-  buffer_suffix: str = ""
   smem_align: str = ""
   smem_prefix: str = ""
   smem_prefix_for_cast: bool = True
   arg_int_prefix: str = "const int"
   barrier: str = ""
+  end_token: Optional[str] = "}"
   code_for_workitem: Dict[Union[Literal["g"], Literal["l"], Literal["i"]], Callable] = {}
   global_max: List[int] = []
   local_max: List[int] = []
@@ -63,18 +64,18 @@ class CStyleLanguage(NamedTuple):
     return self.render_cast([out_val], output_dtype) if output_dtype != buf_dtype else out_val
 
   def get_kernel_modifier(self, uops:UOpGraph) -> str: return ""
-  def render_kernel(self, function_name:str, kernel:List[str], bufs:List[Tuple[str,Tuple[DType,bool]]], uops:UOpGraph, prefix=None) -> str:
-    tmp = "const sampler_t smp = CLK_NORMALIZED_COORDS_FALSE | CLK_ADDRESS_CLAMP | CLK_FILTER_NEAREST;\n" if any(isinstance(dtype, ImageDType) for _,(dtype,_) in bufs) else ""  # noqa: E501
+  def render_kernel(self, function_name:str, uops:UOpGraph, prefix=None) -> str:
+    tmp = "const sampler_t smp = CLK_NORMALIZED_COORDS_FALSE | CLK_ADDRESS_CLAMP | CLK_FILTER_NEAREST;\n" if any(isinstance(dtype, ImageDType) for _,(dtype,_) in self.bufs) else ""  # noqa: E501
     buftypes = [(name,f"{'write_only' if mutable else 'read_only'} image2d_t" if dtype.name.startswith('image') else
                 ("" if mutable else "const ")+self.buffer_prefix+self.render_dtype(dtype)+"*"+self.buffer_suffix if isinstance(dtype, PtrDType) else
-                self.arg_int_prefix if dtype == dtypes.int else None) for name,(dtype,mutable) in bufs]
+                self.arg_int_prefix if dtype == dtypes.int else None) for name,(dtype,mutable) in self.bufs]
     prg = ''.join([f"{self.kernel_prefix}void {self.get_kernel_modifier(uops)}{function_name}(",] +
     [', '.join([f'{t} {name}' for name,t in buftypes] + self.extra_args)] +
-    [") {\n" + tmp] + ['\n'.join(kernel), "\n}"])
+    [") {\n" + tmp] + ['\n'.join(self.kernel), "\n}"])
     return prg if prefix is None else "\n".join(prefix)+f"\n{prg}"
 
   # returns a str statement that does the store
-  def render_store(self, buf_name:str, buf_dtype:DType, var_name:str, var_dtype:DType, idx:str, local=False) -> str:
+  def render_store(self, buf_name:str, buf_dtype:DType, var_name:str, var_dtype:DType, idx:str, idx_dtype:DType, local=False) -> str:
     if isinstance(buf_dtype, ImageDType):
       assert var_dtype == dtypes.float.vec(4), f"images must be float4, getting {var_dtype}"
       return f"write_imagef({buf_name}, {idx}, {var_name});"
@@ -87,94 +88,49 @@ class CStyleLanguage(NamedTuple):
 
   def render_local(self, name:str, dtype:DType, size:int): return self.smem_align + self.smem_prefix + f"{self.render_dtype(dtype)} {name}[{size}];"
   def render_dtype(self, var_dtype:DType) -> str: return self.type_map.get(var_dtype, var_dtype.name)
+  def render_loop(self, u): return f"for (int {(expr := self.ssa(u,'ridx'))} = {self.r[u.vin[0]]}; {expr} < {self.r[u.vin[1]]}; {expr}++) {{"
+  def uop_special(self, u):
+    self.kk(f"int {u.arg[1]} = {self.code_for_workitem[u.arg[1][0]](u.arg[0])}; /* {u.arg[2]} */")
+    self.r[u] = u.arg[1]
 
-def uops_to_cstyle(lang:CStyleLanguage, function_name:str, uops:UOpGraph) -> str:
-  kernel = []
-  bufs: List[Tuple[str, Tuple[DType, bool]]] = []
-  #pend_close = None
-  depth = 1
-  def kk(s): kernel.append("  "*depth+s)
+  def uop_alu(self, u):
+    # remove parens if ALU types are the same. TODO: can do more here
+    if u.arg in {BinaryOps.ADD,BinaryOps.MUL,BinaryOps.XOR}: operands = [strip_parens(self.r[v]) if v.arg == u.arg else self.r[v]for v in u.vin]
+    else: operands = [self.r[v] for v in u.vin]
+    val = self.code_for_op[u.arg](*operands, u.dtype)
+    assert self.child_count[u] != 0, f"childless ALU op found {u}"
+    # TODO: fix index rendering issue. fix clang nested max macro issue
+    if self.child_count[u] <= 1 and u.arg != BinaryOps.MAX and not getenv("EXPAND_SSA"): self.r[u] = val
+    else: self.kk(f"{self.render_dtype(u.dtype)} {self.ssa(u,'alu')} = {val};")
 
-  c: DefaultDict[str, int] = defaultdict(int)
-  r: Dict[UOp, str] = {}
-  def ssa(u, prefix="t"):
-    nonlocal c, r
-    ret = f"{prefix}{c[prefix]}"
-    if u is not None: r[u] = ret
-    c[prefix] += 1
-    return ret
+  def uop_load(self, u):
+    val = self.render_load(u.dtype, self.r[u.vin[0]], u.vin[0].dtype, strip_parens(self.r[u.vin[1]]), u.vin[0].uop is UOps.DEFINE_LOCAL)
+    # NOTE: this relies on the load not happening if it's in the unselected branch
+    if len(u.vin) > 3: val = self.code_for_op[TernaryOps.WHERE](self.r[u.vin[2]], val, self.r[u.vin[3]], u.dtype)
+    self.kk(f"{self.render_dtype(u.dtype)} {self.ssa(u,'val')} = {val};")
 
-  child_count = Counter(v for ru in uops for v in ru.vin)
+  def uop_phi(self, u):
+    self.kk(f"{self.r[u.vin[0]]} = {self.r[u.vin[1]]};")
+    self.r[u] = self.r[u.vin[0]]
 
-  for u in uops:
-    uop,dtype,vin,args = u.uop,u.dtype,u.vin,u.arg
-    # these four uops don't have output dtypes
-    if uop is UOps.IF:
-      kk(f"if ({r[vin[0]]}) {{")
-      depth += 1
-    elif uop is UOps.BARRIER: kk(lang.barrier)
-    elif uop in {UOps.ENDLOOP, UOps.ENDIF}:
-      depth -= 1
-      kk("}")
-    elif uop is UOps.STORE:
-      assert vin[0].dtype is not None and vin[2].dtype is not None
-      rendered_store = lang.render_store(r[vin[0]], vin[0].dtype, r[vin[2]], vin[2].dtype, strip_parens(r[vin[1]]), vin[0].uop is UOps.DEFINE_LOCAL)
-      kk(f"if ({r[vin[3]]}) {{ {rendered_store} }}" if len(vin) > 3 else rendered_store)
+  def uop_cast(self, u, bitcast=False):
+    if bitcast:
+      assert len(u.vin) == 1
+      precast = self.ssa(None,'precast')
+      self.kk(f"{self.render_dtype(cast(DType, u.vin[0].dtype))} {precast} = {r[u.vin[0]]};")
+      val = self.render_cast([precast], u.dtype, bitcast=True)
     else:
-      assert dtype is not None, f"None dtype for uop {uop}"
-      if uop is UOps.LOOP:
-        kk(f"for (int {(expr := ssa(u,'ridx'))} = {r[vin[0]]}; {expr} < {r[vin[1]]}; {expr}++) {{")
-        depth += 1
-      elif uop is UOps.ALU:
-        # remove parens if ALU types are the same. TODO: can do more here
-        if args in {BinaryOps.ADD,BinaryOps.MUL,BinaryOps.XOR}: operands = [strip_parens(r[v]) if v.arg == args else r[v]for v in vin]
-        else: operands = [r[v] for v in vin]
-        val = lang.code_for_op[args](*operands, dtype)
-        assert child_count[u] != 0, f"childless ALU op found {u}"
-        # TODO: fix index rendering issue. fix clang nested max macro issue
-        if child_count[u] <= 1 and args != BinaryOps.MAX and not getenv("EXPAND_SSA"): r[u] = val
-        else: kk(f"{lang.render_dtype(dtype)} {ssa(u,'alu')} = {val};")
-      elif uop is UOps.SPECIAL:
-        kk(f"int {args[1]} = {lang.code_for_workitem[args[1][0]](args[0])}; /* {args[2]} */")
-        r[u] = args[1]
-      elif uop is UOps.LOAD:
-        val = lang.render_load(dtype, r[vin[0]], vin[0].dtype, strip_parens(r[vin[1]]), vin[0].uop is UOps.DEFINE_LOCAL)
-        # NOTE: this relies on the load not happening if it's in the unselected branch
-        if len(vin) > 3: val = lang.code_for_op[TernaryOps.WHERE](r[vin[2]], val, r[vin[3]], dtype)
-        kk(f"{lang.render_dtype(dtype)} {ssa(u,'val')} = {val};")
-      elif uop is UOps.PHI:
-        kk(f"{r[vin[0]]} = {r[vin[1]]};")
-        r[u] = r[vin[0]]
-      elif uop in {UOps.CAST, UOps.BITCAST}:
-        if uop is UOps.BITCAST:
-          assert len(vin) == 1
-          precast = ssa(None,'precast')
-          kk(f"{lang.render_dtype(cast(DType, vin[0].dtype))} {precast} = {r[vin[0]]};")
-          val = lang.render_cast([precast], dtype, bitcast=True)
-        else:
-          val = lang.render_cast([r[x] for x in vin], dtype, bitcast=False)
-        if child_count[u] <= 1: r[u] = val
-        else: kk(f"{lang.render_dtype(dtype)} {ssa(u,'cast')} = {val};")
-      elif uop is UOps.DEFINE_LOCAL:
-        kk(lang.render_local(args[0], dtype, args[1]))
-        r[u] = args[0]
-      elif uop is UOps.DEFINE_VAR:
-        bufs.append((args.expr, (dtype,False)))
-        r[u] = args.expr
-      elif uop is UOps.DEFINE_GLOBAL:
-        assert len(bufs) == args[0], f"missed a global buffer {len(bufs)} {args}"
-        bufs.append((args[1], (dtype,args[2])))
-        r[u] = args[1]
-      elif uop is UOps.WMMA: kk(f"{lang.render_dtype(dtype)} {ssa(u, 'wmma')} = {args}({r[vin[0]]}, {r[vin[1]]}, {r[vin[2]]});")
-      elif uop is UOps.DEFINE_ACC: kk(f"{lang.render_dtype(dtype)} {ssa(u,'acc')} = {lang.render_const(args, dtype)};")
-      elif uop is UOps.CONST: r[u] = lang.render_const(args, dtype) if args >= 0 else f"({lang.render_const(args, dtype)})"
-      elif uop is UOps.GEP:
-        assert vin[0].dtype is not None
-        from_ssa = vin[0].uop in {UOps.LOAD, UOps.WMMA, UOps.DEFINE_ACC}
-        r[u] = (r[vin[0]] if from_ssa else f"{(r[vin[0]])}") + (f"[{args}]" if vin[0].dtype.count > 4 else f".{'xyzw'[args]}")
-      else: raise RuntimeError(f"failed to render {uop}")
+      val = self.render_cast([self.r[x] for x in u.vin], u.dtype, bitcast=False)
+    if self.child_count[u] <= 1: self.r[u] = val
+    else: self.kk(f"{self.render_dtype(u.dtype)} {self.ssa(u,'cast')} = {val};")
 
-  return lang.render_kernel(function_name, kernel, bufs, uops)
+  def uop_wmma(self, u): self.kk(f"{self.render_dtype(u.dtype)} {self.ssa(u, 'wmma')} = {u.arg}({self.r[u.vin[0]]}, {self.r[u.vin[1]]}, {self.r[u.vin[2]]});")
+  def uop_define_acc(self, u): self.kk(f"{self.render_dtype(u.dtype)} {self.ssa(u,'acc')} = {self.render_const(u.arg, u.dtype)};")
+  def uop_const(self, u):  self.r[u] = self.render_const(u.arg, u.dtype) if u.arg >= 0 else f"({self.render_const(u.arg, u.dtype)})"
+  def uop_gep(self, u):
+    assert u.vin[0].dtype is not None
+    from_ssa = u.vin[0].uop in {UOps.LOAD, UOps.WMMA, UOps.DEFINE_ACC}
+    self.r[u] = (self.r[u.vin[0]] if from_ssa else f"{(self.r[u.vin[0]])}") + (f"[{u.arg}]" if u.vin[0].dtype.count > 4 else f".{'xyzw'[u.arg]}")
 
 class OpenCLLanguage(CStyleLanguage):
   kernel_prefix = "__kernel "
@@ -189,10 +145,9 @@ class OpenCLLanguage(CStyleLanguage):
   def render_cast(self, x, var_dtype, bitcast=False) -> str:
     return f"as_{self.render_dtype(var_dtype)}({x[0]})" if bitcast else super().render_cast(x, var_dtype)
 
-  def render_kernel(self, function_name, kernel, bufs, uops, prefix=None) -> str:
+  def render_kernel(self, function_name, uops, prefix=None) -> str:
     if any(uop.dtype == dtypes.half for uop in uops): prefix = ["#pragma OPENCL EXTENSION cl_khr_fp16 : enable"]
-    return super().render_kernel(function_name, kernel, bufs, uops, prefix)
-OpenCLRenderer = functools.partial(uops_to_cstyle, OpenCLLanguage())
+    return super().render_kernel(function_name, uops, prefix)
 
 class MetalLanguage(CStyleLanguage):
   kernel_prefix = "kernel "
@@ -215,14 +170,13 @@ class MetalLanguage(CStyleLanguage):
   def render_cast(self, x: List[str], var_dtype: DType, bitcast=False) -> str:
     return f"as_type<{self.render_dtype(var_dtype)}>({x[0]})" if bitcast else super().render_cast(x, var_dtype)
 
-  def render_kernel(self, function_name, kernel, bufs, uops, prefix=None):
+  def render_kernel(self, function_name, uops, prefix=None):
     prefix = ["#include <metal_stdlib>","using namespace metal;"]
     if any(uop.uop == UOps.WMMA for uop in uops): prefix.append("""template<typename T, typename S, typename U> U __metal_wmma(T m, T n, U o) {
     S a,b,c; a.thread_elements()[0] = m.x; a.thread_elements()[1] = m.y; b.thread_elements()[0] = n.x; b.thread_elements()[1] = n.y;
     c.thread_elements()[0] = o.x; c.thread_elements()[1] = o.y; simdgroup_multiply_accumulate(c, a, b, c);
     return U(c.thread_elements()[0], c.thread_elements()[1]);\n}""")
-    return super().render_kernel(function_name, kernel, bufs, uops, prefix)
-MetalRenderer = functools.partial(uops_to_cstyle, MetalLanguage())
+    return super().render_kernel(function_name, uops, prefix)
 
 code_for_op_half = {BinaryOps.MAX: lambda a,b,dtype: f"__hmax({a},{b})" if dtype in (dtypes.half, dtypes.bfloat16) else f"max({a},{b})",
                     UnaryOps.SQRT: lambda x,dtype: f"hsqrt({x})" if dtype in (dtypes.half, dtypes.bfloat16) else f"sqrt({x})",
@@ -241,7 +195,7 @@ class CUDALanguage(CStyleLanguage):
   code_for_op = {**CStyleLanguage().code_for_op, **code_for_op_half}
   type_map = {dtypes.bfloat16: "nv_bfloat16"}
 
-  def render_kernel(self, function_name, kernel, bufs, uops, prefix=None):
+  def render_kernel(self, function_name, uops, prefix=None):
     prefix = ["#define INFINITY (__int_as_float(0x7f800000))","#define NAN (__int_as_float(0x7fffffff))"]
     if any(uop.dtype == dtypes.half for uop in uops):
       prefix += ["#include <cuda_fp16.h>", "struct half4 { half x, y, z, w; };", "struct half8 { half x, y, z, w, a, b, c, d; };",
@@ -253,8 +207,7 @@ class CUDALanguage(CStyleLanguage):
   return c;}""",]
 
     if any(uop.dtype == dtypes.bfloat16 for uop in uops): prefix.append("#include <cuda_bf16.h>")
-    return super().render_kernel(function_name, kernel, bufs, uops, prefix=prefix)
-CUDARenderer = functools.partial(uops_to_cstyle, CUDALanguage())
+    return super().render_kernel(function_name, uops, prefix=prefix)
 
 code_for_op_hip = { UnaryOps.SQRT: lambda x,dtype: f"__ocml_sqrt_f{ {dtypes.half:16, dtypes.double:64}.get(dtype, 32)}({x})",
                     UnaryOps.SIN: lambda x,dtype: f"__ocml_sin_f{ {dtypes.half:16, dtypes.double:64}.get(dtype, 32)}({x})",
@@ -321,7 +274,7 @@ class HIPLanguage(CStyleLanguage):
   uses_ptr_arithmetic = False  # NOTE: this fixes TestLinearizerOverflowAlt
   type_map = {dtypes.bfloat16: "hip_bfloat16"}
 
-  def render_kernel(self, function_name, kernel, bufs, uops, prefix=None) -> str:
+  def render_kernel(self, function_name, uops, prefix=None) -> str:
     prefix = ["#define INFINITY (__builtin_inff())\n#define NAN (__builtin_nanf(\"\"))",
               "typedef long unsigned int size_t;"]
     if any(uop.dtype == dtypes.bfloat16 for uop in uops): prefix.append("""
@@ -342,12 +295,10 @@ static __attribute__((device)) bool operator==(hip_bfloat16 a, hip_bfloat16 b) {
 """)
     prefix.append('\n'.join(_make_hip_dtype(*x) for x in [("float", "float", 2), ("float", "float", 4),
                                                              ("signed int", "int", 4), ("signed int", "int", 2)]))
-    return super().render_kernel(function_name, kernel, bufs, uops, prefix)
+    return super().render_kernel(function_name, uops, prefix)
 
   def get_kernel_modifier(self, uops:UOpGraph) -> str:
     requiredMaxThreadsPerBlock = prod(u.arg[2] for u in uops if u.uop == UOps.SPECIAL and u.arg[1][0] == "l")
     # https://clang.llvm.org/docs/AttributeReference.html#amdgpu-flat-work-group-size
     # NOTE: this makes hlb_cifar10 twice as fast, there may be more gains in tweaking these parameters
     return f"__attribute__((amdgpu_flat_work_group_size(1, {requiredMaxThreadsPerBlock})))"
-
-HIPRenderer = functools.partial(uops_to_cstyle, HIPLanguage())

@@ -1,4 +1,4 @@
-from typing import Callable, DefaultDict, Dict, List, Union, NamedTuple, Set
+from typing import Callable, DefaultDict, Dict, List, Union, NamedTuple, Set, Optional
 import functools, struct
 from collections import defaultdict
 from tinygrad.codegen.linearizer import UOps, UOp
@@ -25,6 +25,7 @@ class AssemblyLanguage(NamedTuple):
   asm_for_op: Dict[Op, Callable[...,str]] = {}
   types: Dict[DType, str] = INVERSE_DTYPES_DICT
   supports_half: List[Op] = []
+  matcher = Optional[PatternMatcher] = None
 
   def render_const(self, x:Union[float,int,bool], dtype, mov=None) -> Union[List[str], str]: raise NotImplementedError()
   def render_local(self, dest, name, size, dtype) -> List[str]: raise NotImplementedError()
@@ -39,186 +40,170 @@ class AssemblyLanguage(NamedTuple):
   def render_kernel(self, kernel, function_name, bufs, regs) -> str: raise NotImplementedError()
   def mem_type(self, dtype) -> str: raise NotImplementedError()
 
-def uops_to_asm(lang:AssemblyLanguage, function_name:str, uops:UOpGraph) -> str:
-  kernel:List[str] = []
-  bufs = []
 
-  def eq_rep(root, x, y):
-    root.arg = BinaryOps.XOR
-    new = uops.add(UOps.ALU, dtypes.bool, (root,), arg=UnaryOps.NEG, insert_before=uops.uops.index(root)+1)
-    return new
+  def reset(self, uops:UOpGraph, outputs, inputs) -> None:
+    super().reset(uops, outputs, inputs)
+    self.c_label: DefaultDict[str, int] = defaultdict(int)
+    self.r_label: Dict[UOp, str] = {}
+    # here we do a pretransform on UOps to fix some shortcomings of PTX
+    # all uops must be a register
+    self.replace: Dict[UOp, UOp] = {}
+    self.seen: Set[UOp] = set()
 
-  def lt_rep(x, y):
-    new = uops.add(UOps.ALU, dtypes.bool, (u.vin[0],), arg=UnaryOps.NEG, insert_before=uops.uops.index(u))
-    u.vin = (new, u.vin[1])
-    u.arg = BinaryOps.MUL
+    def eq_rep(root, x, y):
+      root.arg = BinaryOps.XOR
+      new = uops.add(UOps.ALU, dtypes.bool, (root,), arg=UnaryOps.NEG, insert_before=uops.uops.index(root)+1)
+      return new
 
-  def ld_rep(root, x, y):
-    root.dtype = dtypes.uint8
-    new = uops.add(UOps.CAST, dtypes.bool, (root,), insert_before=uops.uops.index(root)+1)
-    ptr_ar(root)
-    return new
+    def lt_rep(x, y):
+      new = uops.add(UOps.ALU, dtypes.bool, (u.vin[0],), arg=UnaryOps.NEG, insert_before=uops.uops.index(u))
+      u.vin = (new, u.vin[1])
+      u.arg = BinaryOps.MUL
 
-  def gate_rep(root, x, y, z, k):
-    new = uops.add(UOps.CAST, dtypes.uint8, (k,), insert_before=uops.uops.index(root))
-    root.vin = (x,y,z,new)
-    return ld_rep(root,x,y)
+    def ld_rep(root, x, y):
+      root.dtype = dtypes.uint8
+      new = uops.add(UOps.CAST, dtypes.bool, (root,), insert_before=uops.uops.index(root)+1)
+      ptr_ar(root)
+      return new
 
-  def ptr_ar(root):
-    assert root.arg in {'.shared', '.global', None}
-    if root.arg is None: root.arg = '.shared' if root.vin[0].uop == UOps.DEFINE_LOCAL else '.global'  # move this to the argL
-    val = uops.add(UOps.CONST, dtypes.int, tuple(), arg=root.vin[0].dtype.itemsize, insert_before=uops.uops.index(root))
-    ptr = uops.add(UOps.ALU, dtypes.int, (root.vin[1], val), arg=BinaryOps.MUL, insert_before=uops.uops.index(root))
-    if ptr.uop == UOps.CONST: root.vin = (root.vin[0], ptr) + root.vin[2:]
-    else:
-      zero = uops.add(UOps.CONST, dtypes.int, tuple(), arg=0, cachable=False, insert_before=uops.uops.index(root))
-      bptr = uops.add(UOps.CAST, dtypes.uint64, (ptr,), insert_before=uops.uops.index(root))
-      fptr = uops.add(UOps.ALU, dtypes.uint64, (root.vin[0], bptr), arg=BinaryOps.ADD, insert_before=uops.uops.index(root))
-      root.vin = (fptr, zero) + root.vin[2:]
+    def gate_rep(root, x, y, z, k):
+      new = uops.add(UOps.CAST, dtypes.uint8, (k,), insert_before=uops.uops.index(root))
+      root.vin = (x,y,z,new)
+      return ld_rep(root,x,y)
 
-  matcher = PatternMatcher([
-    ({"__name__": "root", "uop": UOps.ALU, "arg": BinaryOps.CMPEQ, "vin": ({"__name__": "x", "dtype": dtypes.bool},{"__name__": "y"})}, eq_rep),
-    ({"uop": UOps.ALU, "arg": BinaryOps.CMPLT, "vin": ({"__name__": "x", "dtype": dtypes.bool},{"__name__": "y"})}, lt_rep),
-    ({"__name__": "root", "uop": UOps.LOAD,"dtype": dtypes.bool,
-      "vin": ({"__name__": "x"},{"__name__": "y"},{"__name__": "z"},{"__name__": "k"})}, gate_rep),
-    ({"__name__": "root", "uop": UOps.LOAD,"dtype": dtypes.bool, "vin": ({"__name__": "x"},{"__name__": "y"})}, ld_rep),
-    ({"__name__": "root", "uop": UOps.STORE, "vin": {}}, ptr_ar),
-    ({"__name__": "root", "uop": UOps.LOAD, "vin": {}}, ptr_ar),
-  ])
+    def ptr_ar(root):
+      assert root.arg in {'.shared', '.global', None}
+      if root.arg is None: root.arg = '.shared' if root.vin[0].uop == UOps.DEFINE_LOCAL else '.global'  # move this to the argL
+      val = uops.add(UOps.CONST, dtypes.int, tuple(), arg=root.vin[0].dtype.itemsize, insert_before=uops.uops.index(root))
+      ptr = uops.add(UOps.ALU, dtypes.int, (root.vin[1], val), arg=BinaryOps.MUL, insert_before=uops.uops.index(root))
+      if ptr.uop == UOps.CONST: root.vin = (root.vin[0], ptr) + root.vin[2:]
+      else:
+        zero = uops.add(UOps.CONST, dtypes.int, tuple(), arg=0, cachable=False, insert_before=uops.uops.index(root))
+        bptr = uops.add(UOps.CAST, dtypes.uint64, (ptr,), insert_before=uops.uops.index(root))
+        fptr = uops.add(UOps.ALU, dtypes.uint64, (root.vin[0], bptr), arg=BinaryOps.ADD, insert_before=uops.uops.index(root))
+        root.vin = (fptr, zero) + root.vin[2:]
 
-  # here we do a pretransform on UOps to fix some shortcomings of PTX
-  # all uops must be a register
-  replace: Dict[UOp, UOp] = {}
-  seen: Set[UOp] = set()
-  for u in uops:
-    if u in seen: continue
-    seen.add(u)
-    for o,n in replace.items():
-      if o in u.vin and u is not n:
-        u.vin = tuple(n if x == o else x for x in u.vin)
-    if rew := matcher.rewrite(u): replace[u] = rew
-  uops.remove_childless(set(x for x in uops if x.uop in {UOps.DEFINE_GLOBAL, UOps.PHI, UOps.ENDIF, UOps.ENDLOOP, UOps.STORE}))
+    self.matcher = PatternMatcher([
+      ({"__name__": "root", "uop": UOps.ALU, "arg": BinaryOps.CMPEQ, "vin": ({"__name__": "x", "dtype": dtypes.bool},{"__name__": "y"})}, eq_rep),
+      ({"uop": UOps.ALU, "arg": BinaryOps.CMPLT, "vin": ({"__name__": "x", "dtype": dtypes.bool},{"__name__": "y"})}, lt_rep),
+      ({"__name__": "root", "uop": UOps.LOAD,"dtype": dtypes.bool,
+        "vin": ({"__name__": "x"},{"__name__": "y"},{"__name__": "z"},{"__name__": "k"})}, gate_rep),
+      ({"__name__": "root", "uop": UOps.LOAD,"dtype": dtypes.bool, "vin": ({"__name__": "x"},{"__name__": "y"})}, ld_rep),
+      ({"__name__": "root", "uop": UOps.STORE, "vin": {}}, ptr_ar),
+      ({"__name__": "root", "uop": UOps.LOAD, "vin": {}}, ptr_ar),
+    ])
 
-  def kk(*s: str): kernel.append("\n".join(s))
+    for u in uops:
+      if u in self.seen: continue
+      self.seen.add(u)
+      for o,n in self.replace.items():
+        if o in u.vin and u is not n:
+          u.vin = tuple(n if x == o else x for x in u.vin)
+      if rew := self.matcher.rewrite(u): self.replace[u] = rew
+    uops.remove_childless(set(x for x in uops if x.uop in {UOps.DEFINE_GLOBAL, UOps.PHI, UOps.ENDIF, UOps.ENDLOOP, UOps.STORE}))
 
-  c: DefaultDict[str, int] = defaultdict(int)
-  r: Dict[UOp, Union[List[str], str]] = {}
-  def ssa(u, prefix="t", dtype=None) -> str:
-    nonlocal c, r
-    prefix += f"_{dtype if dtype else lang.types[u.dtype]}_"
-    c[prefix] += 1
-    if u: r[u] = f"%{prefix}{c[prefix]-1}"
-    return f"%{prefix}{c[prefix]-1}"
+  def ssa_label(self, u, prefix):
+    self.c_label[prefix] += 1
+    self.r_label[u] = f"{self.label_prefix}{prefix}_{self.c_label[prefix]-1}"
+    return self.r_label[u]
 
-  c_label: DefaultDict[str, int] = defaultdict(int)
-  r_label: Dict[UOp, str] = {}
-  def ssa_label(u, prefix):
-    nonlocal c_label, r_label
-    c_label[prefix] += 1
-    r_label[u] = f"{lang.label_prefix}{prefix}_{c_label[prefix]-1}"
-    return r_label[u]
-
-  def const(x:Union[float,int,bool], dtype, mov=False):
-    if mov or dtype in lang.const_requires_mov:
-      kk(*lang.render_const(x, dtype, mov=(out:=ssa(None, 'const', lang.types[dtype]))))
+  def const(self, x:Union[float,int,bool], dtype, mov=False):
+    if mov or dtype in self.const_requires_mov:
+      self.kk(*self.render_const(x, dtype, mov=(out:=self.ssa(None, 'const', self.types[dtype]))))
       return out
-    return lang.render_const(x, dtype)
+    return self.render_const(x, dtype)
 
-  def cast(a, dtype:DType, atype:DType, bitcast=False, u=None, pred=False):
+  def cast(self, a, dtype:DType, atype:DType, bitcast=False, u=None, pred=False):
     if atype == dtype:
-      if u: r[u] = a
+      if u: self.r[u] = a
       return a
-    kk(*lang.render_cast((ret:=ssa(u, 'cast', lang.types[dtype])), a, dtype, atype, bitcast))
+    self.kk(*self.render_cast((ret:=self.ssa(u, 'cast', self.types[dtype])), a, dtype, atype, bitcast))
     return ret
 
-  for u in uops:
-    uop,dtype,vin,args = u.uop,u.dtype,u.vin,u.arg
-    if uop == UOps.IF:
-      assert vin[0].dtype is not None
-      kk(*lang.render_bra(lb:=ssa_label(u, 'if'), cast(r[vin[0]], dtypes.bool, vin[0].dtype, u=u, pred=True), f"{lb}_true"), f"{lb}_true:")
-    elif uop == UOps.BARRIER and lang.barrier: kk(lang.barrier)
-    elif uop == UOps.ENDLOOP:
-      kk(lang.asm_for_op[BinaryOps.ADD](r[vin[0]], r[vin[0]], "1", dtypes.int, lang.types[dtypes.int]),
-          lang.asm_for_op[BinaryOps.CMPLT](pred:=ssa(None, "pred", "pred"), r[vin[0]], r[vin[0].vin[1]], dtypes.int, lang.types[dtypes.int]))
-      kk(*lang.render_bra(r_label[vin[0]], pred, f"{r_label[vin[0]]}_exit"), f"{r_label[vin[0]]}_exit:")
-    elif uop == UOps.ENDIF:
-      kk(f"{r_label[vin[0]]}:")
-    elif uop == UOps.STORE:
-      assert vin[0].dtype is not None and vin[1].dtype is not None and vin[2].dtype is not None
-      if vin[2].dtype.count > 1:
-        kk((f"@{r[vin[3]]} " if len(vin)>3 else "") + \
-            f"st{u.arg}.v{vin[2].dtype.count}.{lang.mem_type(vin[2].dtype.scalar())} [{r[vin[0]]}+{vin[1].arg}], {{{', '.join(r[vin[2]])}}};")
-      else:
-        kk(*lang.render_store(r[vin[0]], r[vin[2]], vin[2].dtype, gate=r[vin[3]] if len(vin)>3 else None, ss=u.arg, offset=vin[1].arg))
-    else:
-      assert dtype is not None, f"None dtype for uop {uop}"
-      if uop == UOps.LOOP: kk(*lang.render_loop(ssa(u, 'ridx'), r[vin[0]], ssa_label(u, 'loop')))
-      elif uop == UOps.ALU:
-        assert vin[0].dtype is not None
-        operands = [r[x] for x in vin]
-        lab = ssa(u, "alu")
-        if needs_upcast := dtype == dtypes.half and args not in lang.supports_half:
-          dtype = dtypes.float32
-          out_lab, lab = lab, ssa(None, "alu_cast", lang.types[dtype])
-          for i, op in enumerate(operands):
-            operands[i] = ssa(None, "alu_cast", lang.types[dtype])
-            kk(*lang.render_cast(operands[i], op, dtype, dtypes.half)) # type: ignore
-        if args == BinaryOps.CMPLT or args == BinaryOps.CMPEQ:
-          # pass in the other dtype here
-          kk(lang.asm_for_op[args](lab, *operands, vin[0].dtype, lang.types[vin[0].dtype]))
-        else:
-          kk(lang.asm_for_op[args](lab, *operands, dtype, lang.types[dtype]))
-        if needs_upcast:
-          kk(*lang.render_cast(out_lab, lab, dtypes.half, dtype))
-      elif uop == UOps.DEFINE_ACC:
-        if dtype.count > 1:
-          r[u] = [ssa(None, 'acc', lang.types[dtype.scalar()]) for _ in range(dtype.count)]
-          for uu in r[u]: kk(f"mov.b{lang.types[dtype.scalar()][1:]} {uu}, {const(args, dtype.scalar())};")
-        else: kk(f"mov.b{lang.types[dtype][1:]} {ssa(u, 'acc')}, {const(args, dtype)};")
-      elif uop == UOps.SPECIAL:
-        assert args[1][0] != "i", "idx not supported"
-        kk(f"mov.u32 %{args[1]}, {(lang.gid if args[1][0] == 'g' else lang.lid)[args[0]]};")
-        r[u] = "%" + args[1]
-        kernel = [f".reg .u32 %{args[1]};"] + kernel
-      elif uop == UOps.CONST:
-        if dtype.count > 1: r[u] = [const(args, dtype.scalar(), mov=True) for _ in range(dtype.count)]
-        else: r[u] = const(args, dtype, mov=True)
-      elif uop == UOps.GEP: r[u] = r[vin[0]][u.arg]
-      elif uop == UOps.LOAD:
-        assert vin[1].dtype is not None
-        if dtype.count > 1:
-          r[u] = [ssa(None, 'val', lang.types[dtype.scalar()]) for _ in range(dtype.count)]
-          if(len(vin)>3):
-            for v in r[u]: kk(f"mov.{lang.mem_type(dtype.scalar())} {v}, {render_val(0, dtype.scalar())};")
-          kk((f"@{r[vin[2]]}"if len(vin) > 3 else "")
-            + f" ld{u.arg}.v{dtype.count}.{lang.mem_type(dtype.scalar())} {{{', '.join(r[u])}}}, [{r[vin[0]]}+{vin[1].arg}];")
-        else:
-          kk(*lang.render_load(r[vin[0]], ssa(u, 'val'), dtype, gate=r[vin[2]] if len(vin) > 3 else None,
-                              alt=r[vin[3]] if len(vin) > 3 else None, ss=u.arg, offset=vin[1].arg))
-      elif uop == UOps.PHI:
-        kk(f"mov.b{lang.types[dtype][1:]} {r[vin[0]]}, {r[vin[1]]};")
-        r[u] = r[vin[0]]
-      elif uop in {UOps.CAST, UOps.BITCAST}:
-        assert vin[0].dtype is not None
-        if dtype.count>1: r[u] = [r[x] for x in vin] # type: ignore
-        else: cast(r[vin[0]], dtype, vin[0].dtype, bitcast=uop is UOps.BITCAST, u=u)
-      elif uop == UOps.DEFINE_LOCAL:
-        # TODO: we should sum these, and fetch 0xC000 from somewhere
-        assert args[1]*dtype.itemsize <= 0xC000, "too large local"
-        kk(*lang.render_local(ssa(u, 'local', lang.types[dtypes.ulong]), args[0], args[1], dtype))
-      elif uop is UOps.DEFINE_VAR:
-        bufs.append((args.expr, dtype))
-        r[u] = f"%{args.expr}"
-        if lang.load_global: kk(*lang.render_load(args.expr, ssa(u, 'dat', dtype=lang.types[dtype]), dtype, ss=".param"))
-      elif uop is UOps.DEFINE_GLOBAL:
-        bufs.append((args[1], dtype))
-        r[u] = f"%{args[1]}"
-        if lang.load_global:
-          dt = dtypes.ulong if dtype.__class__ == PtrDType else dtype
-          kk(*lang.render_load(args[1], ssa(u, 'dat', dtype=lang.types[dt]), dt, ss=".param"))
-      else: raise NotImplementedError(f"no code for {uop}")
+  def render_if(self, u):
+    assert u.vin[0].dtype is not None
+    return self.render_bra(lb:=self.ssa_label(u, 'if'), self.cast(self.r[u.vin[0]], dtypes.bool, u.vin[0].dtype, u=u, pred=True), f"{lb}_true"), f"{lb}_true:")
 
-  return lang.render_kernel(kernel, function_name, bufs, c.items())
+  def render_phi(self, u): return f"mov.b{self.types[u.dtype][1:]} {self.r[u.vin[0]]}, {self.r[u.vin[1]]};"
+
+  def render_define_var(self, u): return self.render_load(u.arg.expr, self.ssa(u, 'dat', dtype=self.types[u.dtype]), u.dtype, ss=".param")
+
+  def render_define_global(self, u):
+    dt = u.dtypes.ulong if u.dtype.__class__ == PtrDType else u.dtype
+    return self.render_load(u.arg[1], self.ssa(u, 'dat', dtype=self.types[dt]), dt, ss=".param")
+
+  def uop_endloop(self, u):
+    self.kk(self.asm_for_op[BinaryOps.ADD](self.r[u.vin[0]], self.r[u.vin[0]], "1", dtypes.int, self.types[dtypes.int]),
+        self.asm_for_op[BinaryOps.CMPLT](pred:=self.ssa(None, "pred", "pred"), self.r[u.vin[0]], self.r[u.vin[0].vin[1]], dtypes.int, self.types[dtypes.int]))
+    self.kk(*self.render_bra(self.r_label[u.vin[0]], pred, f"{self.r_label[u.vin[0]]}_exit"), f"{self.r_label[u.vin[0]]}_exit:")
+
+  def uop_endif(self, u): self.kk(f"{self.r_label[u.vin[0]]}:")
+
+  def uop_store(self, u):
+    assert u.vin[0].dtype is not None and u.vin[1].dtype is not None and u.vin[2].dtype is not None
+    if u.vin[2].dtype.count > 1:
+      self.kk((f"@{r[u.vin[3]]} " if len(u.vin)>3 else "") + \
+          f"st{u.arg}.v{u.vin[2].dtype.count}.{self.mem_type(u.vin[2].dtype.scalar())} [{self.r[u.vin[0]]}+{u.vin[1].arg}], {{{', '.join(self.r[u.vin[2]])}}};")
+    else:
+      self.kk(*self.render_store(self.r[u.vin[0]], self.r[u.vin[2]], u.vin[2].dtype, gate=self.r[u.vin[3]] if len(u.vin)>3 else None, ss=u.arg, offset=u.vin[1].arg))
+
+  def uop_alu(self, u):
+    assert u.vin[0].dtype is not None
+    operands = [self.r[x] for x in u.vin]
+    lab = self.ssa(u, "alu")
+    if needs_upcast := dtype == dtypes.half and u.arg not in self.supports_half:
+      dtype = dtypes.float32
+      out_lab, lab = lab, self.ssa(None, "alu_cast", self.types[dtype])
+      for i, op in enumerate(operands):
+        operands[i] = self.ssa(None, "alu_cast", self.types[dtype])
+        self.kk(*self.render_cast(operands[i], op, dtype, dtypes.half)) # type: ignore
+    if u.arg == BinaryOps.CMPLT or u.arg == BinaryOps.CMPEQ:
+      # pass in the other dtype here
+      self.kk(self.asm_for_op[u.arg](lab, *operands, u.vin[0].dtype, self.types[u.vin[0].dtype]))
+    else:
+      self.kk(self.asm_for_op[u.arg](lab, *operands, dtype, self.types[dtype]))
+    if needs_upcast:
+      self.kk(*self.render_cast(out_lab, lab, dtypes.half, dtype))
+
+  def uop_define_acc(self, u):
+    if u.dtype.count > 1:
+      self.r[u] = [self.ssa(None, 'acc', self.types[u.dtype.scalar()]) for _ in range(u.dtype.count)]
+      for uu in self.r[u]: self.kk(f"mov.b{self.types[u.dtype.scalar()][1:]} {uu}, {self.const(u.arg, u.dtype.scalar())};")
+    else: self.kk(f"mov.b{self.types[u.dtype][1:]} {self.ssa(u, 'acc')}, {self.const(u.arg, u.dtype)};")
+
+  def uop_special(self, u):
+    assert u.arg[1][0] != "i", "idx not supported"
+    self.kk(f"mov.u32 %{u.arg[1]}, {(self.gid if u.arg[1][0] == 'g' else self.lid)[u.arg[0]]};")
+    self.r[u] = "%" + u.arg[1]
+    self.kernel = [f".reg .u32 %{u.arg[1]};"] + self.kernel
+
+  def uop_const(self, u):
+    if u.dtype.count > 1: self.r[u] = [self.const(u.arg, u.dtype.scalar(), mov=True) for _ in range(u.dtype.count)]
+    else: self.r[u] = self.const(u.arg, u.dtype, mov=True)
+
+  def uop_gep(self, u): self.r[u] = self.r[u.vin[0]][u.arg]
+
+  def uop_load(self, u):
+          assert u.vin[1].dtype is not None
+          if u.dtype.count > 1:
+            self.r[u] = [self.ssa(None, 'val', self.types[u.dtype.scalar()]) for _ in range(u.dtype.count)]
+            if(len(u.vin)>3):
+              for v in self.r[u]: self.kk(f"mov.{self.mem_type(u.dtype.scalar())} {v}, {render_val(0, u.dtype.scalar())};")
+            self.kk((f"@{self.r[u.vin[2]]}"if len(u.vin) > 3 else "")
+              + f" ld{u.arg}.v{u.dtype.count}.{self.mem_type(u.dtype.scalar())} {{{', '.join(self.r[u])}}}, [{self.r[u.vin[0]]}+{u.vin[1].arg}];")
+          else:
+            self.kk(*self.render_load(self.r[u.vin[0]], self.ssa(u, 'val'), u.dtype, gate=self.r[u.vin[2]] if len(u.vin) > 3 else None,
+                                alt=self.r[u.vin[3]] if len(u.vin) > 3 else None, ss=u.arg, offset=u.vin[1].arg))
+
+  def uop_cast(self, u, bitcast=False):
+    assert u.vin[0].dtype is not None
+    if u.dtype.count>1: self.r[u] = [self.r[x] for x in u.vin] # type: ignore
+    else: self.cast(self.r[u.vin[0]], u.dtype, u.vin[0].u.dtype, bitcast=u.uop is UOps.BITCAST, u=u)
+
+  def uop_define_local(self, u):
+    # TODO: we should sum these, and fetch 0xC000 from somewhere
+    assert u.arg[1]*u.dtype.itemsize <= 0xC000, "too large local"
+    self.kk(*self.render_local(self.ssa(u, 'local', self.types[dtypes.ulong]), u.arg[0], u.arg[1], u.dtype))
 
 class PTXLanguage(AssemblyLanguage):
   kernel_prefix = """.version VERSION
@@ -263,7 +248,7 @@ class PTXLanguage(AssemblyLanguage):
   def render_local(self, dest, name, size, dtype) -> List[str]:
     return [f".shared .align 4 .b8 {name}[{size*dtype.itemsize}];", f"mov.u64 {dest}, {name}[0];"]
 
-  def render_loop(self, idx, start, label, acc=None) -> List[str]: return [f"mov.u32 {idx}, {start};", f"{label}:"]
+  def render_loop(self, u) -> List[str]: return [f"mov.u32 {self.ssa(u, 'ridx')}, {self.r[u.vin[0]]};", f"{self.ssa_label(u, 'loop')}:"]
 
   def render_bra(self, b1, pred=None, b2=None) -> List[str]: return [f"@{pred} bra {b1};", f"@!{pred} bra {b2};"] if pred else [f"bra {b1};"]
 
