@@ -19,7 +19,6 @@ def helper_test_lin(lin: Linearizer, opts, failed_platforms, rtol=1e-2, atol=1e-
 
   for opt in opts:
     try:
-      print(f"testing {opt} on {Device.DEFAULT}")
       lin.apply_opt(opt)
     except KernelOptError:
       # it's considered fixed if we invalidated the opts
