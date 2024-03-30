@@ -2,13 +2,13 @@ import ctypes, subprocess, pathlib, tempfile
 from tinygrad.device import Compiled, MallocAllocator, Compiler
 from tinygrad.helpers import cpu_time_execution
 from tinygrad.codegen.kernel import LinearizerOptions
-from tinygrad.renderer.cstyle import uops_to_cstyle, CStyleLanguage
+from tinygrad.renderer.cstyle import CStyleLanguage
 
 CLANG_PROGRAM_HEADER = '#include <stdbool.h>\n#include <tgmath.h>\n#define max(x,y) ((x>y)?x:y)\n#define half __fp16\n'
 
 class ClangCompiler(Compiler):
   linearizer_opts = LinearizerOptions("CLANG", supports_float4=False, has_local=False)
-  def render(self, name:str, uops) -> str: return uops_to_cstyle(CStyleLanguage(buffer_suffix=" restrict"), name, uops)
+  def render(self, name:str, uops, outputs=[], inputs=[]) -> str: return CStyleLanguage(buffer_suffix=" restrict").uops_to_code(name, uops, outputs, inputs)
   def compile(self, src:str) -> bytes:
     # TODO: remove file write. sadly clang doesn't like the use of /dev/stdout here
     with tempfile.NamedTemporaryFile(delete=True) as output_file:
