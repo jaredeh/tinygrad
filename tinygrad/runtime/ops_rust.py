@@ -1,19 +1,18 @@
 import ctypes, subprocess, pathlib, tempfile
-from tinygrad.device import Compiled, MallocAllocator, Compiler
+from tinygrad.device import Compiled, MallocAllocator, Compiler, CompilerOptions
 from tinygrad.helpers import cpu_time_execution, prod, to_function_name
-from tinygrad.codegen.kernel import LinearizerOptions
 from tinygrad.renderer.rust import uops_to_rust, RustLanguage
 from tinygrad.ops import LazyOp, get_lazyop_info
 from tinygrad.device import CompiledASTRunner
 from tinygrad.lazy import LazyBuffer
 from tinygrad.codegen.linearizer import Linearizer
-from typing import Tuple
+from typing import Tuple, Optional
 import functools
 
 RUST_PROGRAM_HEADER = ''
 
 class RustCompiler(Compiler):
-  linearizer_opts = LinearizerOptions("RUST", supports_float4=False, has_local=False)
+  compiler_opts = CompilerOptions("RUST", supports_float4=False, has_local=False)
   def render(self, name:str, uops, outputs=[], inputs=[]) -> str:
     a = uops_to_rust(RustLanguage(), name, uops, outputs, inputs)
     print(a, file=open(f"/tmp/tinygrad/{name}.rs", "w"))
@@ -42,7 +41,7 @@ class RustProgram:
 class RustDevice(Compiled):
   def __init__(self, device:str): super().__init__(device, MallocAllocator, RustCompiler("compile_rust"), RustProgram)
 
-  def to_program(self, k:Linearizer, outputs:Tuple[LazyBuffer,...]=[], inputs:Tuple[LazyBuffer,...]=[]) -> CompiledASTRunner:
+  def to_program(self, k:Linearizer, outputs:Optional[Tuple[LazyBuffer,...]]=[], inputs:Optional[Tuple[LazyBuffer,...]]=[]) -> CompiledASTRunner:
     assert self.compiler is not None, "compiler is required to run AST"
     k.linearize()
     info = get_lazyop_info(k.ast[0])
