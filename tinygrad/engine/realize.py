@@ -21,7 +21,7 @@ class SyncOp(JITRunner):
 
 def lower_schedule_item(si:ScheduleItem) -> Optional[JITRunner]:
   assert len(set(x.device for x in si.outputs+si.inputs)) == 1 or si.ast[0].op in {LoadOps.COPY, LoadOps.WAIT}
-  if si.ast[0].op is BufferOps.STORE: return Device[si.outputs[0].device].get_runner(*si.ast)
+  if si.ast[0].op is BufferOps.STORE: return Device[si.outputs[0].device].get_runner(*si.ast, outs=si.outputs, ins=si.inputs)
   assert len(si.ast) == 1 and len(si.outputs) == 1, "only ASTRunner supports multioutput"
   out, ast = si.outputs[0], si.ast[0]
   if ast.op is LoadOps.COPY:

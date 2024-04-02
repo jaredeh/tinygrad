@@ -1,9 +1,9 @@
 from __future__ import annotations
 from collections import defaultdict
 from typing import TYPE_CHECKING, Any, List, Optional, Dict, Tuple, ClassVar, NamedTuple
-import importlib, inspect, functools, pathlib, time, ctypes
+import importlib, inspect, functools, pathlib, time, ctypes, tempfile, subprocess
 from tinygrad.helpers import ansilen, DEBUG, getenv, colored, BEAM, NOOPT, all_int, to_function_name, from_mv, flat_mv, diskcache_get, diskcache_put
-from tinygrad.helpers import prod, CACHECOLLECTING
+from tinygrad.helpers import prod, CACHECOLLECTING, cpu_time_execution
 from tinygrad.shape.symbolic import Variable, sym_infer, sint
 from tinygrad.ops import LazyOp, get_lazyop_info, GlobalCounters
 from tinygrad.buffer import Buffer, BufferOptions
@@ -157,6 +157,11 @@ class Compiler:
       lib = self.compile(src)
       if self.cachekey is not None: diskcache_put(self.cachekey, src, lib)
     return lib
+  def compile_file(self, cmd:str, src:str) -> bytes:
+    # TODO: remove file write. sadly clang/rustc doesn't like the use of /dev/stdout here
+    with tempfile.NamedTemporaryFile(delete=False) as output_file:
+      subprocess.check_output((cmd+str(output_file.name)).split(), input=(src).encode('utf-8'))
+      return pathlib.Path(output_file.name).read_bytes()
 
 class CompiledASTRunner(JITRunner):
   def __init__(self, name:str, prg:str, dname:str, global_size:Optional[List[int]]=None, local_size:Optional[List[int]]=None,
@@ -205,21 +210,36 @@ class MultiDeviceJITGraph(JITRunner):
   def __call__(self, rawbufs:List[Buffer], var_vals:Dict[Variable, int], wait=False, jit=False) -> Optional[float]:
     raise NotImplementedError("override this")
 
+class CDLLStyleProgram:
+  def __init__(self, name:str, lib:bytes):
+    self.name, self.lib = name, lib
+    # write to disk so we can load it
+    with tempfile.NamedTemporaryFile(delete=True) as cached_file_path:
+      pathlib.Path(cached_file_path.name).write_bytes(lib)
+      self.fxn = ctypes.CDLL(str(cached_file_path.name))[name]
+  def __call__(self, *bufs, vals=(), wait=False): return cpu_time_execution(lambda: self.fxn(*bufs, *vals), enable=wait)
+
+
 logkern, logkern_level = open(getenv("LOGKERN", ""), "a") if getenv("LOGKERN", "") else None, getenv("LOGKERN_LEVEL", 1)
 class Compiled:
-  def __init__(self, device:str, allocator:Allocator, compiler:Optional[Compiler], runtime, graph=None):
-    self.dname, self.allocator, self.compiler, self.runtime, self.graph = device, allocator, compiler, runtime, graph
+  def __init__(self, device:str, allocator:Allocator, compiler:Optional[Compiler], runtime, graph=None, has_bufsz=False):
+    self.dname, self.allocator, self.compiler, self.runtime, self.graph, self.has_bufsz = device, allocator, compiler, runtime, graph, has_bufsz
   def synchronize(self): pass  # override this in your device
 
-  def to_program(self, k:Linearizer) -> CompiledASTRunner:
+  def to_program(self, k:Linearizer, outs:Optional[Tuple[LazyBuffer,...]]=None, ins:Optional[Tuple[LazyBuffer,...]]=None) -> CompiledASTRunner:
     assert self.compiler is not None, "compiler is required to run AST"
     k.linearize()
     info = get_lazyop_info(k.ast[0])
     ops, mem = k.uops.flops_mem()
     run_count = prod((k.global_size if k.global_size else []) + (k.local_size if k.local_size else []))
-    # NOTE: we use min here to ignore the indexing FLOPS
-    ret = CompiledASTRunner(k.name, self.compiler.render(to_function_name(k.name), k.uops), self.dname, k.global_size, k.local_size,
-                            k.uops.vars(), min(info.flops, ops * run_count), min(info.mem_estimate, mem * run_count), outcount=len(k.outbufs))
+    if self.has_bufsz:
+      bufsizes = [b.size for b in outs + ins] if outs is not None and ins is not None else []
+      ret = CompiledASTRunner(k.name, self.compiler.render(to_function_name(k.name), k.uops, bufsizes=bufsizes), self.dname, k.global_size, k.local_size,
+                              k.uops.vars(), min(info.flops, ops * run_count), min(info.mem_estimate, mem * run_count), outcount=len(k.outbufs))
+    else:
+      # NOTE: we use min here to ignore the indexing FLOPS
+      ret = CompiledASTRunner(k.name, self.compiler.render(to_function_name(k.name), k.uops), self.dname, k.global_size, k.local_size,
+                              k.uops.vars(), min(info.flops, ops * run_count), min(info.mem_estimate, mem * run_count), outcount=len(k.outbufs))
     return ret
 
   def get_linearizer(self, *ast:LazyOp) -> Linearizer:
@@ -251,4 +271,5 @@ class Compiled:
     return k
 
   @functools.lru_cache(None)    # pylint: disable=method-cache-max-size-none
-  def get_runner(self, *ast:LazyOp, outputs:Tuple[LazyBuffer,...], inputs:Tuple[LazyBuffer,...]) -> CompiledASTRunner: return self.to_program(self.get_linearizer(*ast))
+  def get_runner(self, *ast:LazyOp, outs:Optional[Tuple[LazyBuffer,...]]=None, ins:Optional[Tuple[LazyBuffer,...]]=None) -> CompiledASTRunner:
+    return self.to_program(self.get_linearizer(*ast), outs=outs, ins=ins)

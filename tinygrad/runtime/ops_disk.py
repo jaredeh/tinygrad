@@ -6,7 +6,7 @@ from tinygrad.device import Compiled, Allocator, JITRunner, Buffer
 from tinygrad.ops import UnaryOps, LazyOp, BufferOps
 from tinygrad.shape.view import strides_for_shape
 from tinygrad.lazy import LazyBuffer
-from typing import Tuple
+from typing import Tuple, Optional
 
 class UnderlyingDiskBuffer:
   def __init__(self, fd, mem): self.fd, self.mem = fd, mem
@@ -75,6 +75,6 @@ class DiskRunner(JITRunner):
 class DiskDevice(Compiled):
   def __init__(self, device:str): super().__init__(device, DiskAllocator(device[len("disk:"):]), None, None)
   @functools.lru_cache(None)    # pylint: disable=method-cache-max-size-none
-  def get_runner(self, *ast:LazyOp, outputs:Tuple[LazyBuffer,...], inputs:Tuple[LazyBuffer,...]):
+  def get_runner(self, *ast:LazyOp, outs:Optional[Tuple[LazyBuffer,...]]=None, ins:Optional[Tuple[LazyBuffer,...]]=None):
     assert len(ast) == 1, "DiskRunner doesn't support multioutput kernels."
     return DiskRunner(ast[0])

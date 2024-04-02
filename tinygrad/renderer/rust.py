@@ -161,14 +161,10 @@ def print_uop_graph(uop_graph):
     uop,dtype,vin,args = u.uop,u.dtype,u.vin,u.arg
     print(f"  {uop} {dtype} {vin} {args}")
 
-def uops_to_rust(lang:RustLanguage, function_name:str, uops:UOpGraph, outputs, inputs) -> str:
+def uops_to_rust(lang:RustLanguage, function_name:str, uops:UOpGraph, bufsizes:List[int]) -> str:
   kernel = []
-  bufsizes = [b.size for b in outputs+inputs]
-  maxbufsize = 0 if len(bufsizes) == 0 else max(bufsizes)
   bufs: List[Tuple[str, Tuple[DType, bool, int]]] = []
   depth = 1
-  print(f"outputs: {outputs} inputs: {inputs} bufsizes: {bufsizes}")
-  print_uop_graph(uops)
   def kk(s): kernel.append("  "*depth+s)
 
   c: DefaultDict[str, int] = defaultdict(int)
@@ -182,25 +178,8 @@ def uops_to_rust(lang:RustLanguage, function_name:str, uops:UOpGraph, outputs, i
 
   child_count = Counter(v for ru in uops for v in ru.vin)
 
-  # #if len(bufsizes) == 0: maxbufsize = max([u.arg for u in [u for i,u in uops() if u.uop is UOps.CONST] if isinstance(u.arg, int)])+1
-  # if len(bufsizes) == 0:
-  #   c = []
-  #   d = [u.vin for i,u in enumerate(uops) if u.uop is UOps.LOOP and len(u.vin) == 2]
-  #   print(f"d: {d}" )
-  #   for a in d:
-  #     if isinstance(a[1].arg, int):
-  #       c.append(a)
-  #     else
-  #   #     if len(a) == 0:
-  #   #       c.append(a)
-  #   #     else:
-  #   #       for b in a:
-  #   #       print(b.arg)
-  #   print(f"maxbufsize: {maxbufsize}")
-
   for u in uops:
     uop,dtype,vin,args = u.uop,u.dtype,u.vin,u.arg
-    print(f"uop: {uop} dtype: {dtype} vin: {vin} args: {args}")
     # these four uops don't have output dtypes
     if uop is UOps.IF:
       kk(f"if ({r[vin[0]]}) {{")
