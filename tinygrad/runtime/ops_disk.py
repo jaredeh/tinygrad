@@ -1,5 +1,5 @@
 import os, mmap, _posixshmem, io, functools
-from typing import Dict, List, Any
+from typing import Dict, List, Any, Tuple
 from tinygrad.dtype import DType, dtypes
 from tinygrad.helpers import prod, OSX
 from tinygrad.device import Compiled, Allocator, JITRunner, Buffer
@@ -72,6 +72,6 @@ class DiskRunner(JITRunner):
 class DiskDevice(Compiled):
   def __init__(self, device:str): super().__init__(device, DiskAllocator(device[len("disk:"):]), None, None)
   @functools.lru_cache(None)    # pylint: disable=method-cache-max-size-none
-  def get_runner(self, *ast:LazyOp):
+  def get_runner(self, *ast:LazyOp, iobufs:Tuple=()):
     assert len(ast) == 1, "DiskRunner doesn't support multioutput kernels."
     return DiskRunner(ast[0])

@@ -104,7 +104,7 @@ class CommandQueue:
           if si.ast[0].op is LoadOps.CUSTOM:
             runner:JITRunner = CustomOp(si.ast[0].arg)
           elif si.ast[0].op is BufferOps.STORE:
-            runner = Device[si.outputs[0].device].get_runner(*si.ast)
+            runner = Device[si.outputs[0].device].get_runner(*si.ast, iobufs=(si.outputs,si.inputs))
           else: raise RuntimeError(f"unknown type {si}")
           runner.exec(list(si.outputs+si.inputs), si.var_vals)
         else:
