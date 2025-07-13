@@ -42,6 +42,7 @@ def render_dtype(var_dtype:DType) -> str:
     raise ValueError(f"Unknown dtype: {var_dtype} name: {var_dtype.name}")
   return RUST_TYPE_MAP[var_dtype.name]
 def is_float(dtype) -> bool: return False if dtype is None else dtypes.is_float(dtype)
+def is_bool(dtype) -> bool: return False if dtype is None else dtypes.is_bool(dtype) or dtype.name == "bool"
 def is_unsigned(dtype) -> bool: return False if dtype is None else dtypes.is_unsigned(dtype)
 def rust_cast(x:str, dst_dtype:DType, src_dtype:DType=None, force_cast=False, idx=False, ops=False):
   if DEBUG >= 6: print(f"rust_cast: {x}, {dst_dtype}, {src_dtype}, {force_cast}, {idx}, {ops}")
@@ -55,15 +56,17 @@ def rust_cast(x:str, dst_dtype:DType, src_dtype:DType=None, force_cast=False, id
     elif is_unsigned(dst_dtype) and int(x) < 0:
         val = f"{dst_dtype.max}"
     if idx: return val
+  if dtypes.is_bool(dst_dtype):
+    return val if is_bool(src_dtype) else f"{add_parens(val)} != { '0.0' if is_float(src_dtype) else '0' }" if val not in ["false","true"] else val
   if src_dtype is not None and src_dtype == dst_dtype: return f"{val} as usize" if idx else val
-  if dst_dtype is dtypes.bool:
-    return f"({add_parens(val)} != { '0' if src_dtype is None else '0.0' if is_float(src_dtype) else '0' })" if val not in ["false","true"] else val
-  if src_dtype is dtypes.bool or detect_bool(val) and src_dtype is not None:
+  if is_bool(src_dtype) or detect_bool(val) and src_dtype is not None:
     val = f"{add_parens(val)}" if not is_float(dst_dtype) else f"{add_parens(add_parens(val+" as usize"))}"
     force_cast = True
   if idx: return f"{add_parens(val)} as   usize"
   if detect_neg_const(x) and detect_expression(x) and not detect_as_cast(x) and is_unsigned(src_dtype):
     val = f"{rust_cast(val,to_signed(src_dtype),force_cast=True)}"
+  if is_unsigned(dst_dtype) != is_unsigned(src_dtype):
+    val = f"{val} as {render_dtype(dst_dtype)}"
   return f"{val} as {render_dtype(dst_dtype)}" if force_cast else val
 
 base_rewrite = PatternMatcher([
@@ -100,7 +103,7 @@ base_rewrite = PatternMatcher([
   (UPat(Ops.LOAD, src=(UPat(Ops.INDEX, src=(UPat(), UPat(), UPat.var("gate"))).or_casted("bidx"), UPat.var("var")), allow_any_len=True),
     lambda ctx, bidx, var, gate: f"if {ctx[gate]} {{ {ctx[bidx]} }} else {{ {ctx[var]} }}"),
   (UPat(Ops.LOAD, src=(UPat.var('bidx'),), allow_any_len=True), lambda ctx, bidx: f"{ctx[bidx]}"),
-  (UPat(Ops.STORE, src=(UPat.var('bidx'), UPat.var("var")), allow_any_len=True), lambda ctx, bidx, var: f"{ctx[bidx]} = {ctx[var]};"),
+  (UPat(Ops.STORE, src=(UPat.var('bidx'), UPat.var("var")), allow_any_len=True), lambda ctx, bidx, var: f"{ctx[bidx]} = {ctx.render_cast(ctx[var], bidx.dtype, var.dtype)};"),
   # alu/gep
   # TODO: look for left-associative
   (UPat(GroupOp.ALU, name="x"), lambda ctx, x: ctx.code_for_op[x.op](
@@ -158,8 +161,8 @@ class RustRenderer(Renderer):
     Ops.MOD: lambda a, b, dtype: f"({a}%{b})",
     Ops.IDIV: lambda a, b, dtype: f"({a}/{b})",
     Ops.CMPNE: lambda a, b, dtype: f"({add_parens(a, on_cast=True)} != {add_parens(b, on_cast=True)})",
-    Ops.SHR: lambda a, b, dtype: f"({a}>>{b})",
-    Ops.SHL: lambda a, b, dtype: f"({a}<<{b})",
+    Ops.SHR: lambda a, b, dtype: f"({add_parens(a)}>>{b})",
+    Ops.SHL: lambda a, b, dtype: f"({add_parens(a)}<<{b})",
     Ops.CMPLT: lambda a, b, dtype: f"({add_parens(a, on_cast=True)} < {add_parens(b, on_cast=True)})",
     Ops.WHERE: lambda a, b, c, dtype: f"(if {a} {{ {rust_cast(b,dtype)} }} else {{ {rust_cast(c,dtype)} }})"
   }
@@ -176,7 +179,7 @@ class RustRenderer(Renderer):
         val = f"{x}.to_bits()"
       else:
         val = f"{render_dtype(dst_dtype)}::from_bits({rust_cast(x,to_unsigned(dst_dtype),src_dtype=src_dtype,force_cast=True)})"
-      return rust_cast(val, dst_dtype, src_dtype, force_cast=True)
+      return add_parens(rust_cast(val, dst_dtype, src_dtype, force_cast=True))
     return rust_cast(x, dst_dtype, src_dtype, force_cast=force_cast)
 
   # returns a str expression of the const with the given type
