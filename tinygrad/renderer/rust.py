@@ -88,7 +88,7 @@ base_rewrite = PatternMatcher([
   (UPat(Ops.CONST, (dtypes.int64, dtypes.uint64, dtypes.int32,dtypes.uint32,), name="x"), lambda ctx, x: f"{x.arg}"),
   (UPat(Ops.CONST, dtype=dtypes.bool, name="x"), lambda ctx, x: "true" if x.arg else "false"),
   # consts are rendered to larget type and casted
-  (UPat(Ops.CONST, (dtypes.bfloat16, dtypes.half), name="x"), lambda ctx, x: f"bfloat16/half {x.arg}"),
+  (UPat(Ops.CONST, (dtypes.bfloat16, dtypes.half), name="x"), lambda ctx, x: f"{x.arg}"),
   (UPat(Ops.CONST, (dtypes.uint8, dtypes.uint16), name="x"), lambda ctx, x: f"{x.arg}"),
   (UPat(Ops.CONST, (dtypes.int8, dtypes.int16), name="x"), lambda ctx, x: f"{x.arg}"),
   # default const render
@@ -125,7 +125,7 @@ def uops_to_dtypes(uops: List[UOp]) -> List[DType]:
 class RustRenderer(Renderer):
   device = "RUST"
   has_local = False
-  kernel_typedef: str = '#[no_mangle]\npub extern "C" fn'
+  kernel_typedef: str = '#![feature(f16)]\n#[no_mangle]\npub extern "C" fn'
   buffer_prefix: str = "&mut "
   buffer_suffix: str = ""
   smem_align: str = ""
