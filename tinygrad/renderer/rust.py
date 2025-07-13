@@ -52,6 +52,8 @@ def rust_cast(x:str, dst_dtype:DType, src_dtype:DType=None, force_cast=False, id
       val = f"{x}_{render_dtype(dst_dtype)}"
     elif int(x) >= 0:
         val = f"{dst_dtype.max & int(x)}"
+    elif is_unsigned(dst_dtype) and int(x) < 0:
+        val = f"{dst_dtype.max}"
     if idx: return val
   if src_dtype is not None and src_dtype == dst_dtype: return f"{val} as usize" if idx else val
   if dst_dtype is dtypes.bool:
@@ -148,7 +150,7 @@ class RustRenderer(Renderer):
     Ops.LOG2: lambda x, dtype: f"{add_parens(rust_cast(x, dtype))}.log2()",
     Ops.SIN: lambda x, dtype: f"{add_parens(rust_cast(x, dtype))}.sin()",
     Ops.AND: lambda a, b, dtype: f"({a} && {b})" if dtype == dtypes.bool else f"({a} & {b})",
-    Ops.XOR: lambda a, b, dtype: f"({a} ^ {b})",
+    Ops.XOR: lambda a, b, dtype: f"({a} ^ {rust_cast(b,dtype)})",
     Ops.OR: lambda a, b, dtype: f"({a} | {b})",
     Ops.ADD: lambda a, b, dtype: f"( {a} || {b} )" if dtype == dtypes.bool else f"({a} - {negate_const(b)})" if detect_neg_const(b) and dtypes.is_unsigned(dtype) else f"({a}+{rust_cast(b,dtype)})",
     Ops.SUB: lambda a, b, dtype: f"({rust_cast(a,dtype,force_cast=True)}).wrapping_sub({b})" if dtypes.is_int(dtype) else f"({a}-{b})",
