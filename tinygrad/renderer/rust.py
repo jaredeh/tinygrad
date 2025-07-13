@@ -161,7 +161,7 @@ class RustRenderer(Renderer):
     Ops.SHR: lambda a, b, dtype: f"({a}>>{b})",
     Ops.SHL: lambda a, b, dtype: f"({a}<<{b})",
     Ops.CMPLT: lambda a, b, dtype: f"({add_parens(a, on_cast=True)} < {add_parens(b, on_cast=True)})",
-    Ops.WHERE: lambda a, b, c, dtype: f"(if {a} {{ {b} }} else {{ {c} }})"
+    Ops.WHERE: lambda a, b, c, dtype: f"(if {a} {{ {rust_cast(b,dtype)} }} else {{ {rust_cast(c,dtype)} }})"
   }
   string_rewrite = base_rewrite
   extra_matcher = extra_pm
