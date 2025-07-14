@@ -5,11 +5,12 @@ import sys
 import re
 from pathlib import Path
 
+
 def parse_input_file(path):
     """
     Parse the input file for lines like:
     test/models/test_bert.py .                                               [  0%]
-    Returns a dict mapping test names (without .py) to their status string.
+    Returns a dict mapping test module names (without .py) to their status string.
     """
     tests = {}
     line_re = re.compile(r'^(?P<path>\S+\.py)\s+(?P<marks>[\.\wFxs]+)')
@@ -24,11 +25,13 @@ def parse_input_file(path):
             tests[name] = marks
     return tests
 
+
 def build_include_expr(names):
     """
     Build a pytest -k expression including only these names: "name1 and name2 and ..."
     """
     return ' and '.join(sorted(names))
+
 
 def build_exclude_expr(names):
     """
@@ -37,28 +40,42 @@ def build_exclude_expr(names):
     parts = [f'not {n}' for n in sorted(names)]
     return ' and '.join(parts)
 
+
 def main():
-    p = argparse.ArgumentParser(
-        description="Run pytest under python3 -m pytest and tee output to file+stdout"
+    parser = argparse.ArgumentParser(
+        description="Run pytest under python3 -m pytest with optional filtering and tee output to file + stdout"
     )
-    p.add_argument('--input', '-i', metavar='FILE',
-                   help="parser input file (to pick fails/passes)")
-    p.add_argument('--output', '-o', metavar='FILE', default='log.log',
-                   help="where to tee stdout+stderr (default: log.log)")
-    group = p.add_mutually_exclusive_group()
+    parser.add_argument('--input', '-i', metavar='FILE',
+                        help="parser input file (to pick fails/passes)")
+    parser.add_argument('--output', '-o', metavar='FILE', default='log.log',
+                        help="where to tee stdout+stderr (default: log.log)")
+    parser.add_argument('--workers', '-n', metavar='N',
+                        help="number of parallel workers (requires pytest-xdist)")
+    group = parser.add_mutually_exclusive_group()
     group.add_argument('--fails', '-f', action='store_true',
                        help="run only the tests that failed (requires --input)")
     group.add_argument('--passes', '-p', action='store_true',
                        help="run only the tests that passed (requires --input)")
-    args = p.parse_args()
+    args = parser.parse_args()
 
-    # handle the -f / -p requirements
+    # validate arguments
     if (args.fails or args.passes) and not args.input:
         sys.exit("error: --fails/--passes requires --input FILE")
 
-    # Build pytest command
+    # Base pytest command
     cmd = ['python3', '-m', 'pytest', 'test/']
 
+    # handle parallel workers
+    if args.workers:
+        # verify pytest-xdist is installed
+        try:
+            import pkg_resources
+            pkg_resources.get_distribution('pytest-xdist')
+        except Exception:
+            sys.exit("error: pytest-xdist is not installed (needed for --workers/-n)")
+        cmd += ['-n', args.workers]
+
+    # apply filters based on input file
     if args.input:
         tests = parse_input_file(args.input)
         if args.fails:
@@ -73,9 +90,8 @@ def main():
             if non_failing:
                 expr = build_exclude_expr(non_failing)
                 cmd += ['-k', expr]
-        # else neither: no -k
 
-    # run and tee
+    # execute and tee output
     proc = subprocess.Popen(
         cmd,
         stdout=subprocess.PIPE,
@@ -84,16 +100,13 @@ def main():
         bufsize=1,
     )
 
-    output_path = args.output
-    with open(output_path, 'w') as logfile:
+    with open(args.output, 'w') as logfile:
         for line in proc.stdout:
-            # write to console
             sys.stdout.write(line)
-            # write to log
             logfile.write(line)
 
-    ret = proc.wait()
-    sys.exit(ret)
+    sys.exit(proc.wait())
+
 
 if __name__ == '__main__':
     main()
