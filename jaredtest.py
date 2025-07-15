@@ -67,12 +67,6 @@ def main():
 
     # handle parallel workers
     if args.workers:
-        # verify pytest-xdist is installed
-        try:
-            import pkg_resources
-            pkg_resources.get_distribution('pytest-xdist')
-        except Exception:
-            sys.exit("error: pytest-xdist is not installed (needed for --workers/-n)")
         cmd += ['-n', args.workers]
 
     # apply filters based on input file

@@ -57,8 +57,16 @@ def eval_uop(uop:UOp, inputs:list[tuple[DType, list[Any]]]|None=None):
   return out_buf.cast(uop.dtype.fmt).tolist()[0]
 
 def not_support_multi_device():
-  # GPU and CUDA don't support multi device if in CI
-  return CI and REAL_DEV in ("GPU", "CUDA")
+  if REAL_DEV not in ("CUDA", "GPU"): return True
+  if CI: return True  # Do we want this check if we confirm multiple GPUs exist?
+  available_gpus = 0
+  for i in range(4):
+    try:
+      _ = Device[f"{REAL_DEV}:{i}"]
+      available_gpus += 1
+    except Exception:
+      return available_gpus < 4
+  return False
 
 # NOTE: This will open REMOTE if it's the default device
 REAL_DEV = (Device.DEFAULT if Device.DEFAULT != "REMOTE" else Device['REMOTE'].properties.real_device)
