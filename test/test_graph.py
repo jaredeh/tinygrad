@@ -3,10 +3,11 @@ import functools, unittest, ctypes
 
 from tinygrad.device import Device, Buffer
 from tinygrad.tensor import Tensor, _to_np_dtype
-from tinygrad.helpers import Context, CI, dedup, from_mv, not_support_multi_device
+from tinygrad.helpers import Context, CI, dedup, from_mv
 from tinygrad.dtype import dtypes
 from tinygrad.engine.jit import MultiGraphRunner
 from tinygrad.engine.realize import ExecItem, BufferXfer, get_runner, CompiledRunner
+from test.helpers import not_support_multi_device
 
 np.random.seed(1337)
 Tensor.manual_seed(1337)
