@@ -92,12 +92,8 @@ base_rewrite = PatternMatcher([
   (UPat(Ops.CONST, dtype=dtypes.float, name="x"), lambda ctx, x: f"{ctx.render_dtype(x.dtype)}::NAN" if math.isnan(x.arg) else f"{float(x.arg)}_{ctx.render_dtype(x.dtype)}"),
   (UPat(Ops.CONST, (dtypes.int64, dtypes.uint64, dtypes.int32,dtypes.uint32,), name="x"), lambda ctx, x: f"{x.arg}"),
   (UPat(Ops.CONST, dtype=dtypes.bool, name="x"), lambda ctx, x: "true" if x.arg else "false"),
-  # consts are rendered to larget type and casted
-  (UPat(Ops.CONST, (dtypes.bfloat16, dtypes.half), name="x"), lambda ctx, x: f"{x.arg}"),
-  (UPat(Ops.CONST, (dtypes.uint8, dtypes.uint16), name="x"), lambda ctx, x: f"{x.arg}"),
-  (UPat(Ops.CONST, (dtypes.int8, dtypes.int16), name="x"), lambda ctx, x: f"{x.arg}"),
   # default const render
-  (UPat(Ops.CONST, name="x"), lambda ctx, x: str(x.arg)),
+  (UPat(Ops.CONST, name="x"), lambda ctx, x: f"{ctx.render_dtype(x.dtype)}::NAN" if math.isnan(x.arg) else f"{x.arg}"),
   # new load/store
   (UPat(Ops.INDEX, src=(UPat.var("buf"), UPat.var('idx')), allow_any_len=True),
     lambda ctx, buf, idx: f"{ctx[buf]}[{ctx[idx]} as    usize]" if buf.dtype.size > -1 else f"{ctx[buf]}"),
