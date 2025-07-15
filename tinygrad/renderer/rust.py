@@ -60,7 +60,7 @@ def rust_cast(x:str, dst_dtype:DType, src_dtype:DType=None, force_cast=False, id
     return val if is_bool(src_dtype) else f"{add_parens(val)} != { '0.0' if is_float(src_dtype) else '0' }" if val not in ["false","true"] else val
   if src_dtype is not None and src_dtype == dst_dtype: return f"{val} as usize" if idx else val
   if is_bool(src_dtype) or detect_bool(val) and src_dtype is not None:
-    val = f"{add_parens(val)}" if not is_float(dst_dtype) else f"{add_parens(add_parens(val+" as usize"))}"
+    val = f"{add_parens(val)}" if not is_float(dst_dtype) else f"{add_parens(add_parens(val)+" as usize")}"
     force_cast = True
   if idx: return f"{add_parens(val)} as   usize"
   if detect_neg_const(x) and detect_expression(x) and not detect_as_cast(x) and is_unsigned(src_dtype):
@@ -81,6 +81,8 @@ base_rewrite = PatternMatcher([
   (UPat(Ops.DEFINE_LOCAL, name="x"), lambda ctx, x: f"let mut {ctx[x]} = [{f'0.0_{ctx.render_dtype(x.dtype.base)}' if dtypes.is_float(x.dtype.base) else '0'}; {x.dtype.size}];"),
   (UPat(Ops.BARRIER), lambda ctx: ctx.barrier),
   (UPat(Ops.NOOP, name="x"), lambda ctx, x: ctx[x.src[0]]),
+  (UPat(Ops.WHERE, name="x"), lambda ctx, x: f"(if {ctx[x.src[0]]} {{ {ctx.render_cast(ctx[x.src[1]], x.src[1].dtype, x.dtype, preservenumber=True)} }} else {{ {ctx.render_cast(ctx[x.src[2]], x.src[2].dtype, x.dtype, preservenumber=True)} }})"),
+  (UPat(Ops.XOR, name="x"), lambda ctx, x: f"({ctx[x.src[0]]} ^ {ctx.render_cast(ctx[x.src[1]], x.src[1].dtype, x.dtype)})"),
   #(UPat(Ops.SPECIAL, name="x"), lambda ctx,x: f"{ctx.code_for_workitem[x.arg[0][0]](x.arg[0][-1])}; /* {x.arg[1]} */"),
   (UPat(Ops.SPECIAL, name="x"), lambda ctx,x: f"x.arg[0][0]={x.arg[0][0]} x.arg[0][-1]={x.arg[0][-1]}; /* {x.arg[1]} */"),
   # const
@@ -98,12 +100,12 @@ base_rewrite = PatternMatcher([
   (UPat(Ops.CONST, name="x"), lambda ctx, x: str(x.arg)),
   # new load/store
   (UPat(Ops.INDEX, src=(UPat.var("buf"), UPat.var('idx')), allow_any_len=True),
-    lambda ctx, buf, idx: f"{ctx[buf]}[{ctx[idx]} as    usize]"),
+    lambda ctx, buf, idx: f"{ctx[buf]}[{ctx[idx]} as    usize]" if buf.dtype.size > -1 else f"{ctx[buf]}"),
     #lambda ctx, buf, idx: f"{ctx[buf]}[{ctx[idx] if idx.op == Ops.ADD else strip_parens(ctx[idx])} as    usize]"),
   (UPat(Ops.LOAD, src=(UPat(Ops.INDEX, src=(UPat(), UPat(), UPat.var("gate"))).or_casted("bidx"), UPat.var("var")), allow_any_len=True),
     lambda ctx, bidx, var, gate: f"if {ctx[gate]} {{ {ctx[bidx]} }} else {{ {ctx[var]} }}"),
-  (UPat(Ops.LOAD, src=(UPat.var('bidx'),), allow_any_len=True), lambda ctx, bidx: f"{ctx[bidx]}"),
-  (UPat(Ops.STORE, src=(UPat.var('bidx'), UPat.var("var")), allow_any_len=True), lambda ctx, bidx, var: f"{ctx[bidx]} = {ctx.render_cast(ctx[var], bidx.dtype, var.dtype)};"),
+  (UPat(Ops.LOAD, src=(UPat.var('bidx'),), allow_any_len=True), lambda ctx, bidx: f"{'*' if bidx.dtype.size == -1 else ''}{ctx[bidx]}"),
+  (UPat(Ops.STORE, src=(UPat.var('bidx'), UPat.var("var")), allow_any_len=True), lambda ctx, bidx, var: f"{'*' if bidx.dtype.size == -1 else ''}{ctx[bidx]} = {ctx.render_cast(ctx[var], bidx.dtype, var.dtype)};"),
   # alu/gep
   # TODO: look for left-associative
   (UPat(GroupOp.ALU, name="x"), lambda ctx, x: ctx.code_for_op[x.op](
@@ -153,8 +155,7 @@ class RustRenderer(Renderer):
     Ops.LOG2: lambda x, dtype: f"{add_parens(rust_cast(x, dtype))}.log2()",
     Ops.SIN: lambda x, dtype: f"{add_parens(rust_cast(x, dtype))}.sin()",
     Ops.AND: lambda a, b, dtype: f"({a} && {b})" if dtype == dtypes.bool else f"({a} & {b})",
-    Ops.XOR: lambda a, b, dtype: f"({a} ^ {rust_cast(b,dtype)})",
-    Ops.OR: lambda a, b, dtype: f"({a} | {b})",
+    Ops.OR: lambda a, b, dtype: f"({add_parens(a)} | {add_parens(b)})",
     Ops.ADD: lambda a, b, dtype: f"( {a} || {b} )" if dtype == dtypes.bool else f"({a} - {negate_const(b)})" if detect_neg_const(b) and dtypes.is_unsigned(dtype) else f"({a}+{rust_cast(b,dtype)})",
     Ops.SUB: lambda a, b, dtype: f"({rust_cast(a,dtype,force_cast=True)}).wrapping_sub({b})" if dtypes.is_int(dtype) else f"({a}-{b})",
     Ops.MUL: lambda a, b, dtype: f"({rust_cast(a, dtype, ops=True)}*{rust_cast(b, dtype, ops=True)})" if dtype != dtypes.bool else f"({a} && {b})",
@@ -163,15 +164,14 @@ class RustRenderer(Renderer):
     Ops.CMPNE: lambda a, b, dtype: f"({add_parens(a, on_cast=True)} != {add_parens(b, on_cast=True)})",
     Ops.SHR: lambda a, b, dtype: f"({add_parens(a)}>>{b})",
     Ops.SHL: lambda a, b, dtype: f"({add_parens(a)}<<{b})",
-    Ops.CMPLT: lambda a, b, dtype: f"({add_parens(a, on_cast=True)} < {add_parens(b, on_cast=True)})",
-    Ops.WHERE: lambda a, b, c, dtype: f"(if {a} {{ {rust_cast(b,dtype)} }} else {{ {rust_cast(c,dtype)} }})"
+    Ops.CMPLT: lambda a, b, dtype: f"({add_parens(a, on_cast=True)} < {add_parens(b, on_cast=True)})"
   }
   string_rewrite = base_rewrite
   extra_matcher = extra_pm
 
   # returns a str expression of the casted xs with the given type
-  def render_cast(self, x:str, src_dtype:DType, dst_dtype:DType, bitcast=False, force_cast=False) -> str:
-    if DEBUG >= 6: print(f"render_cast(x={x}, src_dtype={src_dtype}, dst_dtype={dst_dtype}, bitcast={bitcast}, force_cast={force_cast}")
+  def render_cast(self, x:str, src_dtype:DType, dst_dtype:DType, bitcast=False, force_cast=False, preservenumber=False) -> str:
+    if DEBUG >= 6: print(f"render_cast(x={x}, src_dtype={src_dtype}, dst_dtype={dst_dtype}, bitcast={bitcast}, force_cast={force_cast}, preservenumber={preservenumber}")
     if x is None:
       raise ValueError("x cannot be None")
     if bitcast and (is_float(dst_dtype) or is_float(src_dtype)):
@@ -180,6 +180,8 @@ class RustRenderer(Renderer):
       else:
         val = f"{render_dtype(dst_dtype)}::from_bits({rust_cast(x,to_unsigned(dst_dtype),src_dtype=src_dtype,force_cast=True)})"
       return add_parens(rust_cast(val, dst_dtype, src_dtype, force_cast=True))
+    if preservenumber and detect_numeric(x):
+      return x
     return rust_cast(x, dst_dtype, src_dtype, force_cast=force_cast)
 
   # returns a str expression of the const with the given type
@@ -200,7 +202,9 @@ class RustRenderer(Renderer):
         print(f"warning: buffer {name} is already defined {name} {dtype} {mutable} ")
         raise
       if isinstance(dtype, PtrDType):
-        buftypes[name] = ("&mut " if mutable else "&")+"["+render_dtype(dtype)+f"; {dtype.size}]"
+        #buftypes[name] = ("&mut " if mutable else "&")+"["+render_dtype(dtype)+f"; {dtype.size}]"
+        buftypes[name] = ("&mut " if mutable else "&") + (render_dtype(dtype) if dtype.size == -1 else f"[{render_dtype(dtype)}; {dtype.size}]")
+        #buftypes[name] = f"name: {name}, dtype: {dtype}, mutable: {mutable}"
       else:
         buftypes[name] = render_dtype(dtype)
 
