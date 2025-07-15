@@ -293,9 +293,9 @@ class RustRenderer(Renderer):
           if u.op is Ops.ASSIGN:
             r[u] = r[u.src[0]]
         elif u.op is Ops.DEFINE_REG:
-          l = f"let mut {r[u]} = {l};"
+          l = f"let mut {r[u]}:{render_dtype(u.dtype)} = {l};"
         else:
-          l = f"let {r[u]} = {l};" if u.op is not Ops.SPECIAL else l
+          l = f"let {r[u]}:{render_dtype(u.dtype)} = {l};" if u.op is not Ops.SPECIAL else l
         kernel.append("  " * depth + l)
         if prefix:
           c[prefix] += 1
