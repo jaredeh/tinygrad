@@ -96,8 +96,7 @@ base_rewrite = PatternMatcher([
   (UPat(Ops.CONST, name="x"), lambda ctx, x: f"{ctx.render_dtype(x.dtype)}::NAN" if math.isnan(x.arg) else f"{x.arg}"),
   # new load/store
   (UPat(Ops.INDEX, src=(UPat.var("buf"), UPat.var('idx')), allow_any_len=True),
-    lambda ctx, buf, idx: f"{ctx[buf]}[{ctx[idx]} as    usize]" if buf.dtype.size > -1 else f"{ctx[buf]}"),
-    #lambda ctx, buf, idx: f"{ctx[buf]}[{ctx[idx] if idx.op == Ops.ADD else strip_parens(ctx[idx])} as    usize]"),
+    lambda ctx, buf, idx: f"{ctx[buf]}[{ctx[idx]} as usize]" if buf.dtype.size > -1 else f"{ctx[buf]}"),
   (UPat(Ops.LOAD, src=(UPat(Ops.INDEX, src=(UPat(), UPat(), UPat.var("gate"))).or_casted("bidx"), UPat.var("var")), allow_any_len=True),
     lambda ctx, bidx, var, gate: f"if {ctx[gate]} {{ {ctx[bidx]} }} else {{ {ctx[var]} }}"),
   (UPat(Ops.LOAD, src=(UPat.var('bidx'),), allow_any_len=True), lambda ctx, bidx: f"{'*' if bidx.dtype.size == -1 else ''}{ctx[bidx]}"),
@@ -208,21 +207,6 @@ class RustRenderer(Renderer):
                   [', '.join([f'{name}: {t}' for name, t in buftypes.items()] + self.extra_args)] +
                   [") {\n"] + ['\n'.join(kernel), "\n}"])
     return prg if prefix is None else "\n".join(prefix) + f"\n{prg}"
-
-  # def arender_kernel(self, function_name:str, kernel:list[str], bufs:list[tuple[str,tuple[DType,bool]]], uops:list[UOp], prefix=None) -> str:
-  #   buftypes = {}
-  #   for name,(dtype,mutable,var,size) in bufs:
-  #     if name in buftypes.keys():
-  #       print(f"warning: buffer {name} is already defined {name} {dtype} {mutable} {var} {size}")
-  #       raise
-  #     if var:
-  #       buftypes[name] = render_dtype(dtype)
-  #     else:
-  #       buftypes[name] = ("&mut " if mutable else "&")+"["+render_dtype(dtype)+f"; {size}]"
-  #   prg = ''.join([f"{self.kernel_prefix}fn {function_name}(",] +
-  #   [', '.join([f'{name}: {t}' for name,t in buftypes.items()])] +
-  #   [") {\n"] + ['\n'.join(kernel), "\n}"])
-  #   return prg if prefix is None else "\n".join(prefix)+f"\n{prg}"
 
   def render_index(self, idx:str) -> str:
     return f"({idx}) as     usize" if detect_expression(idx) else f"{idx} as     usize"
