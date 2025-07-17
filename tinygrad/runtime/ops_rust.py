@@ -10,7 +10,7 @@ class RustCompiler(Compiler):
       return pathlib.Path(output_file.name).read_bytes()
 
   def compile(self, src: str) -> bytes:
-    output = self.compile_file("rustc -Aunused_parens -Aunused_mut -Aunused-variables -C opt-level=3 -C target-cpu=native -C debuginfo=0 --crate-type=cdylib - -o ", src)
+    output = self.compile_file("rustc --edition=2021 -Aunused_parens -Aunused_mut -Aunused-variables -C opt-level=3  -C target-cpu=native -C debuginfo=0 --crate-type=cdylib - -o ", src)
     # print(f"compile len={len(output)}")
     # with open(f"/tmp/blarp", "wb") as f:
     #   f.write(output)
