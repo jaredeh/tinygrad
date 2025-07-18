@@ -169,8 +169,8 @@ class RustRenderer(CStyleLanguage):
 
   def render_index(self, x:str, xdtype:DType, i:str, idtype:DType) -> str:
     if DEBUG >= 6: print(f"render_index(x={x}, xdtype={xdtype}, i={i}, idtype={idtype}")
+    if xdtype.size < 0 and int(i) == 0: return f"*{x}"
     if is_positive_integer(i): return f"{x}[{i}]"
-    if xdtype.size < 0: return f"{x}[{i} WHY-1]"
     return f"{x}[{i} as usize]"
 
   def floatx_isolate_array(self, x:str,dtype:DType) -> str:

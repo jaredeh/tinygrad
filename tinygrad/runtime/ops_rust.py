@@ -5,7 +5,7 @@ import subprocess, tempfile, pathlib, ctypes
 class RustCompiler(Compiler):
   def compile_file(self, cmd:str, src:str) -> bytes:
     # TODO: remove file write. sadly rustc doesn't like the use of /dev/stdout here
-    with tempfile.NamedTemporaryFile(delete=False) as output_file:
+    with tempfile.NamedTemporaryFile(delete=True) as output_file:
       subprocess.check_output((cmd+str(output_file.name)).split(), input=(src).encode('utf-8'))
       output = pathlib.Path(output_file.name).read_bytes()
     return output
