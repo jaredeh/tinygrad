@@ -285,7 +285,6 @@ class RustRenderer(CStyleLanguage):
   def render_dtype(self, dtype:DType, mutable=True) -> str: return render_dtype(dtype)
 
   def _render(self, uops:list[UOp]) -> tuple[str, list[str], list[tuple[str,tuple[DType,bool]]]]:
-    self.tweak = {'unsafe': False, 'kernel': {'#![feature(f16)]':False}}
     r: dict[UOp, str] = {}
     self.r = r
 
