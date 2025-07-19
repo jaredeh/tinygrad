@@ -146,6 +146,7 @@ class RustRenderer(CStyleLanguage):
   }
   string_rewrite = rust_rewrite
   #extra_matcher = rust_extra_pm
+  tweak = {'unsafe': False, 'kernel': {'#![feature(f16)]':False}}
 
   def _render_store(self, d, s) -> str:
     if DEBUG >= 6: print(f"_render_store()")
@@ -241,7 +242,7 @@ class RustRenderer(CStyleLanguage):
         raise
       if isinstance(dtype, PtrDType):
         if self.tweak['unsafe']:
-          buftypes[name] = ("*mut " if mutable else "*") + (render_dtype(dtype) if dtype.size == -1 else f"[{render_dtype(dtype)}; {dtype.size}]")
+          buftypes[name] = ("*mut " if mutable else "*const ") + (render_dtype(dtype) if dtype.size == -1 else f"[{render_dtype(dtype)}; {dtype.size}]")
         else:
           buftypes[name] = ("&mut " if mutable else "&") + (render_dtype(dtype) if dtype.size == -1 else f"[{render_dtype(dtype)}; {dtype.size}]")
       else:
@@ -275,6 +276,7 @@ class RustRenderer(CStyleLanguage):
     prg = ''.join([preamble, f"{ktype} {function_name}(",] +
                   [', '.join([f'{name}: {t}' for name, t in buftypes.items()] + self.extra_args)] +
                   [") {\n"] + ['\n'.join(kernel), "\n}"])
+    tweak = {'unsafe': False, 'kernel': {'#![feature(f16)]':False}}
     if DEBUG >= 6: print(f"prg={prg}")
     import sys
     sys.stdout.flush()
