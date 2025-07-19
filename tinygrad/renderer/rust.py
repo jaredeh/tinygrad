@@ -7,17 +7,17 @@ from tinygrad.dtype import ImageDType, dtypes, DType, PtrDType, to_dtype
 from tinygrad.renderer.cstyle import CStyleLanguage
 
 RUST_TYPE_MAP = {
-    "float64": "f64", "double": "f64",
     "half": "f16", "half2": "Float16x2", "half4": "Float16x4",
     "float": "f32", "float2": "Float32x2", "float4": "Float32x4",
-    "signed char": "i8", "int8": "i8", "char": "i8",
-    "short": "i16", "int16": "i16",
-    "int": "i32", "int32": "i32",
+    "double": "f64",
+    "signed char": "i8",
+    "short": "i16",
+    "int": "i32",
     "long": "i64",
-    "unsigned char": "u8", "uint8": "u8", "uchar": "u8",
-    "unsigned short": "u16", "uint16": "u16", "ushort": "u16",
-    "unsigned int": "u32", "uint32": "u32", "uint": "u32",
-    "unsigned long": "u64", "ulong": "u64",
+    "unsigned char": "u8",
+    "unsigned short": "u16",
+    "unsigned int": "u32",
+    "unsigned long": "u64",
     "bool": "bool", "void": "void"
 }
 
