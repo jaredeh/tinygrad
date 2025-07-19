@@ -7,11 +7,18 @@ from tinygrad.dtype import ImageDType, dtypes, DType, PtrDType, to_dtype
 from tinygrad.renderer.cstyle import CStyleLanguage
 
 RUST_TYPE_MAP = {
-    "long": "i64", "ulong": "u64", "float64": "f64", "double": "f64", "half": "f16",
-    "int": "i32", "uint": "u32", "uint32": "u32", "int32": "i32", "float": "f32",
-    "float4": "Float32x4", "float2": "Float32x2", "half4": "Float16x4", "half2": "Float16x2",
-    "int16": "i16", "uint16": "u16", "unsigned short": "u16", "short": "i16", "ushort": "u16", "unsigned int": "u32", "unsigned long": "u64",
-    "int8": "i8", "uint8": "u8", "char": "i8", "signed char": "i8", "uchar": "u8", "unsigned char": "u8", "bool": "bool", "void": "void"
+    "float64": "f64", "double": "f64",
+    "half": "f16", "half2": "Float16x2", "half4": "Float16x4",
+    "float": "f32", "float2": "Float32x2", "float4": "Float32x4",
+    "signed char": "i8", "int8": "i8", "char": "i8",
+    "short": "i16", "int16": "i16",
+    "int": "i32", "int32": "i32",
+    "long": "i64",
+    "unsigned char": "u8", "uint8": "u8", "uchar": "u8",
+    "unsigned short": "u16", "uint16": "u16", "ushort": "u16",
+    "unsigned int": "u32", "uint32": "u32", "uint": "u32",
+    "unsigned long": "u64", "ulong": "u64",
+    "bool": "bool", "void": "void"
 }
 
 def detect_bool(x:str) -> bool:
@@ -142,8 +149,6 @@ class RustRenderer(CStyleLanguage):
 
   def _render_store(self, d, s) -> str:
     if DEBUG >= 6: print(f"_render_store()")
-    if DEBUG >= 6: print(f"  d={d}")
-    if DEBUG >= 6: print(f"  s={s}")
     src = self[s]
     src_dtype = s.dtype
     dst = None
@@ -154,9 +159,11 @@ class RustRenderer(CStyleLanguage):
         idx = None
         if d.src[0].src[1].op == Ops.CONST:
           idx = f"{int(d.src[0].src[1].arg)}..{int(d.src[0].src[1].arg)+s.dtype.count}"
-        elif d.src[0].src[1].op == Ops.SHL and d.src[0].src[1].src[0].op == Ops.RANGE and d.src[0].src[1].src[1].op == Ops.CONST:
-          ridx = f"((ridx{d.src[0].src[1].src[0].arg}<<{d.src[0].src[1].src[1].arg}) as usize)"
-          idx = f"{ridx}..{ridx}+{s.dtype.count}"
+        else:
+          sidx = f"{self[d.src[0].src[1]]}"
+          if not sidx.endswith("as usize)") and not sidx.endswith("as usize"):
+            sidx = f"({sidx} as usize)"
+          idx = f"{sidx}..{sidx}+{s.dtype.count}"
         if idx is not None: dst = f"data{d.src[0].src[0].arg}[{idx}]"
       if dst is None: raise
       return f"{dst}.copy_from_slice(&{self.render_cast(src, d.dtype, src_dtype)}.0);"
@@ -169,7 +176,11 @@ class RustRenderer(CStyleLanguage):
 
   def render_index(self, x:str, xdtype:DType, i:str, idtype:DType) -> str:
     if DEBUG >= 6: print(f"render_index(x={x}, xdtype={xdtype}, i={i}, idtype={idtype}")
-    if xdtype.size < 0 and int(i) == 0: return f"*{x}"
+    if xdtype.size < 0:
+      if str(i) != "0":
+        self.tweak['unsafe'] = True
+        return f"*{x}.add({i}{' as usize' if bool(re.search(r'\D', i)) else ''})"
+      else: return f"*{x}"
     if is_positive_integer(i): return f"{x}[{i}]"
     return f"{x}[{i} as usize]"
 
@@ -213,6 +224,7 @@ class RustRenderer(CStyleLanguage):
       if x.startswith(render_dtype(dst_dtype)): return x
       if bool(re.search(r'^[a-z][a-z0-9]*$',x)): return x
       if isinstance(dst_dtype, PtrDType) and not isinstance(src_dtype, PtrDType):
+        print(f"WARNING: unsafe")
         return f"unsafe {{ &mut *({self.floatx_rewrite_input(x, dst_dtype)}.as_mut_ptr() as *mut {render_dtype(dst_dtype)}) }}"
       return f"{render_dtype(dst_dtype)}({self.floatx_rewrite_input(x, dst_dtype)}.try_into().unwrap())"
 
@@ -228,7 +240,10 @@ class RustRenderer(CStyleLanguage):
         print(f"warning: buffer {name} is already defined {name} {dtype} {mutable} ")
         raise
       if isinstance(dtype, PtrDType):
-        buftypes[name] = ("&mut " if mutable else "&") + (render_dtype(dtype) if dtype.size == -1 else f"[{render_dtype(dtype)}; {dtype.size}]")
+        if self.tweak['unsafe']:
+          buftypes[name] = ("*mut " if mutable else "*") + (render_dtype(dtype) if dtype.size == -1 else f"[{render_dtype(dtype)}; {dtype.size}]")
+        else:
+          buftypes[name] = ("&mut " if mutable else "&") + (render_dtype(dtype) if dtype.size == -1 else f"[{render_dtype(dtype)}; {dtype.size}]")
       else:
         buftypes[name] = render_dtype(dtype)
 
@@ -236,25 +251,28 @@ class RustRenderer(CStyleLanguage):
     for i,line in enumerate(kernel):
       if len(line.split(" = let")) > 1: kernel[i] = f"{' '*(len(line)-len(line.lstrip()))}let{line.split(" = let")[1]}" #DEFINE_REG, DEFINE_LOCAL,LOAD
       elif bool(re.search(r'^\s+Float\d+', line)):
-        s = re.sub(r'^(\s*)(\w+)\s+(\w+)$', r'\1let \3:\2', line.split(' = ')[0])
-        l = int(re.match(r'^\s+Float\d+x(\d+)', line).group(1))
-        d = self.render_cast(line.split(' = ')[1].rstrip(';'), dtypes.float.vec(l), dtypes.float.vec(l))
-        kernel[i] = f"{s} = {d};"
+        src = re.sub(r'^(\s*)(\w+)\s+(\w+)$', r'\1let \3:\2', line.split(' = ')[0])
+        sz,l = map(int, re.match(r'^\s+Float(\d+)x(\d+)', line).groups())
+        dtype = dtypes.half.vec(l) if sz == 16 else (dtypes.float.vec(l) if sz == 32 else None)
+        if dtype is None: raise NotImplementedError(f"unknown Float type in: {line} a: {sz} {l}")
+        dst = self.render_cast(line.split(' = ')[1].rstrip(';'), dtype, dtype)
+        kernel[i] = f"{src} = {dst};"
       else: kernel[i] = re.sub(r'^(\s*)(\w+)\s+(\w+)\s*=', r'\1let \3:\2 =', line)
 
-    found_f16 = False
     for dt in uops_to_dtypes(uops):
       # emit struct types like Float32x4 etc if needed
       if dt.count > 1:
         vecname = f"{render_dtype(dt)}"
         base = render_dtype(dt.scalar())
         struct_defs.add(f"#[repr(align(16))]\n#[derive(Clone, Copy)]\nstruct {vecname}([{base}; {dt.count}]);\n")
-      if render_dtype(dt) == "f16" or render_dtype(dt).startswith("Float16"): found_f16 = True
+      if render_dtype(dt) == "f16" or render_dtype(dt).startswith("Float16"): self.tweak["kernel"]["#![feature(f16)]"] = True
 
-    preamble = "#![feature(f16)]\n" if found_f16 else ""
+    preamble = "\n".join([k for k,v in self.tweak["kernel"].items() if v]) + "\n"
     preamble += "\n".join(sorted(struct_defs)) + "\n" if struct_defs else ""
 
-    prg = ''.join([preamble, f"{self.kernel_typedef} {function_name}(",] +
+    ktype = self.kernel_typedef.replace('pub','pub unsafe') if self.tweak['unsafe'] else self.kernel_typedef
+    if self.tweak['unsafe']: print("WARNING: unsafe function")
+    prg = ''.join([preamble, f"{ktype} {function_name}(",] +
                   [', '.join([f'{name}: {t}' for name, t in buftypes.items()] + self.extra_args)] +
                   [") {\n"] + ['\n'.join(kernel), "\n}"])
     if DEBUG >= 6: print(f"prg={prg}")
@@ -265,6 +283,7 @@ class RustRenderer(CStyleLanguage):
   def render_dtype(self, dtype:DType, mutable=True) -> str: return render_dtype(dtype)
 
   def _render(self, uops:list[UOp]) -> tuple[str, list[str], list[tuple[str,tuple[DType,bool]]]]:
+    self.tweak = {'unsafe': False, 'kernel': {'#![feature(f16)]':False}}
     r: dict[UOp, str] = {}
     self.r = r
 
@@ -276,7 +295,7 @@ class RustRenderer(CStyleLanguage):
     name = "test"
     for u in uops:
       #print(f"0r={r}")
-      if DEBUG >= 6: print(f"u={u}\n")
+      if DEBUG >= 6: print(f"{'!'*70}\nu={u}\n")
       if DEBUG >= 6: print(f"u.op={u.op}\n")
       if u.op is Ops.SINK:
         if u.arg is not None: name = u.arg.function_name
