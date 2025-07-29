@@ -14,15 +14,22 @@ def elf_loader(blob:bytes, force_section_align:int=1) -> tuple[memoryview, list[
   sh_strtab = blob[(shstrst:=section_headers[header.e_shstrndx].sh_offset):shstrst+section_headers[header.e_shstrndx].sh_size]
   sections = [ElfSection(_strtab(sh_strtab, sh.sh_name), sh, blob[sh.sh_offset:sh.sh_offset+sh.sh_size]) for sh in section_headers]
 
+  print(f"header: {header}")
+  print(f"section_headers: {list(section_headers)}")
+  print(f"Sections: {sections}")
+  for sh in sections:
+    print(f"Section: {sh.name} {sh.header.sh_type} {sh.header.sh_addr} {sh.header.sh_size}")
   def _to_carray(sh, ctype): return (ctype * (sh.header.sh_size // sh.header.sh_entsize)).from_buffer_copy(sh.content)
   rel = [(sh, sh.name[4:], _to_carray(sh, libc.Elf64_Rel)) for sh in sections if sh.header.sh_type == libc.SHT_REL]
   rela = [(sh, sh.name[5:], _to_carray(sh, libc.Elf64_Rela)) for sh in sections if sh.header.sh_type == libc.SHT_RELA]
   symtab = [_to_carray(sh, libc.Elf64_Sym) for sh in sections if sh.header.sh_type == libc.SHT_SYMTAB][0]
   progbits = [sh for sh in sections if sh.header.sh_type == libc.SHT_PROGBITS]
+  progbits.sort(key=lambda sh: (not sh.name.startswith(".text"), sh.header.sh_addralign))
 
   # Prealloc image for all fixed addresses.
   image = bytearray(max([sh.header.sh_addr + sh.header.sh_size for sh in progbits if sh.header.sh_addr != 0] + [0]))
   for sh in progbits:
+    print(f"progbitsSection: {sh.name} {sh.header.sh_type} {sh.header.sh_addr} {sh.header.sh_size}")
     if sh.header.sh_addr != 0: image[sh.header.sh_addr:sh.header.sh_addr+sh.header.sh_size] = sh.content
     else:
       image += b'\0' * (((align:=max(sh.header.sh_addralign, force_section_align)) - len(image) % align) % align) + sh.content
@@ -31,6 +38,7 @@ def elf_loader(blob:bytes, force_section_align:int=1) -> tuple[memoryview, list[
   # Relocations
   relocs = []
   for sh, trgt_sh_name, c_rels in rel + rela:
+    print(f"Relocation section: {sh.name} {trgt_sh_name}")
     target_image_off = next(tsh for tsh in sections if tsh.name == trgt_sh_name).header.sh_addr
     rels = [(r.r_offset, symtab[libc.ELF64_R_SYM(r.r_info)], libc.ELF64_R_TYPE(r.r_info), getattr(r, "r_addend", 0)) for r in c_rels]
     for roff, sym, r_type_, r_addend in rels:
@@ -38,6 +46,7 @@ def elf_loader(blob:bytes, force_section_align:int=1) -> tuple[memoryview, list[
     relocs += [(target_image_off + roff, sections[sym.st_shndx].header.sh_addr + sym.st_value, rtype, raddend) for roff, sym, rtype, raddend in rels]
 
   return memoryview(image), sections, relocs
+
 
 def relocate(instr: int, ploc: int, tgt: int, r_type: int):
   match r_type:
@@ -56,8 +65,14 @@ def relocate(instr: int, ploc: int, tgt: int, r_type: int):
   raise NotImplementedError(f"Encountered unknown relocation type {r_type}")
 
 def jit_loader(obj: bytes) -> bytes:
+  print(f"Loading obj[0:128]: {obj[:128]}")
+  import sys
+  sys.stdout.flush()
   image, _, relocs = elf_loader(obj)
+  print(f"Loaded obj[0:128]: {bytes(image)[0:128]}")
   # This is needed because we have an object file, not a .so that has all internal references (like loads of constants from .rodata) resolved.
   for ploc,tgt,r_type,r_addend in relocs:
+    print(f"Relocating {hex(ploc)} {hex(tgt)} {hex(r_type)} {hex(r_addend)}")
     image[ploc:ploc+4] = struct.pack("<I", relocate(struct.unpack("<I", image[ploc:ploc+4])[0], ploc, tgt+r_addend, r_type))
+  print(f"Loaded reloced obj[0:128]: {bytes(image)[0:128]}")
   return bytes(image)

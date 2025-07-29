@@ -14,7 +14,12 @@ class ClangJITCompiler(Compiler):
     args = ['-march=native', f'--target={target}-none-unknown-elf', '-O2', '-fPIC', '-ffreestanding', '-fno-math-errno', '-nostdlib', '-fno-ident']
     arch_args = ['-ffixed-x18'] if target == 'arm64' else []
     obj = subprocess.check_output([getenv("CC", 'clang'), '-c', '-x', 'c', *args, *arch_args, '-', '-o', '-'], input=src.encode('utf-8'))
-    return jit_loader(obj)
+    j = jit_loader(obj)
+    with open("ctest.o", "wb") as f:
+      f.write(obj)
+    with open("ctestj.o", "wb") as f:
+      f.write(j)
+    return j
 
   def disassemble(self, lib:bytes): return capstone_flatdump(lib)
 

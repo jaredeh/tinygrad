@@ -47,7 +47,7 @@ def is_floatx(dtype) -> bool: return False if dtype is None else (dtype.name in 
 def is_bool(dtype) -> bool: return False if dtype is None else dtypes.is_bool(dtype) or dtype.name == "bool"
 def is_unsigned(dtype) -> bool: return False if dtype is None else dtypes.is_unsigned(dtype)
 def rust_cast(x:str, dst_dtype:DType, src_dtype:DType=None, force_cast=False, idx=False, ops=False):
-  if DEBUG >= 6: print(f"rust_cast: {x}, {dst_dtype}, {src_dtype}, {force_cast}, {idx}, {ops}")
+  if os.environ.get("RUSTDEBUG", False): print(f"rust_cast: {x}, {dst_dtype}, {src_dtype}, {force_cast}, {idx}, {ops}")
   #print(f"dst_dtype: {x}, {dst_dtype.max}")
   val = x
   if detect_numeric(x):
@@ -86,6 +86,7 @@ rust_rewrite = PatternMatcher([
   (UPat(Ops.BARRIER), lambda ctx: ctx.barrier),
   (UPat(Ops.NOOP, name="x"), lambda ctx, x: ctx[x.src[0]]),
   (UPat(Ops.WHERE, name="x"), lambda ctx, x: f"(if {ctx[x.src[0]]} {{ {ctx.render_cast(ctx[x.src[1]], x.src[1].dtype, x.dtype)} }} else {{ {ctx.render_cast(ctx[x.src[2]], x.src[2].dtype, x.dtype)} }})"),
+  #(UPat(Ops.WHERE, name="x"), lambda ctx, x: f"(match {ctx[x.src[0]]} {{ true => {ctx.render_cast(ctx[x.src[1]], x.src[1].dtype, x.dtype)}, false => {ctx.render_cast(ctx[x.src[2]], x.src[2].dtype, x.dtype)} }})"),
   (UPat(Ops.XOR, name="x"), lambda ctx, x: f"({ctx[x.src[0]]} ^ {ctx.render_cast(ctx[x.src[1]], x.src[1].dtype, x.dtype)})"),
   (UPat(Ops.SPECIAL, name="x"), lambda ctx,x: f"x.arg[0][0]={x.arg[0][0]} x.arg[0][-1]={x.arg[0][-1]}; /* {x.arg[1]} {x.flargp} */"),
   (UPat(Ops.CONST, arg=math.inf, name="x"), lambda ctx, x: f"{ctx.render_dtype(x.dtype)}::INFINITY"),
@@ -129,9 +130,9 @@ class RustRenderer(CStyleLanguage):
     Ops.SQRT: lambda x, dtype: f"{add_parens(rust_cast(x, dtype, None))}.sqrt()",
     Ops.RECIP: lambda x, dtype: f"1.0/{add_parens(rust_cast(x, dtype))}",
     Ops.NEG: lambda x, dtype: f"(!{x})" if dtype is dtypes.bool else f"-({x})",
-    Ops.EXP2: lambda x, dtype: f"{add_parens(rust_cast(x, dtype))}.exp2()",
-    Ops.LOG2: lambda x, dtype: f"{add_parens(rust_cast(x, dtype))}.log2()",
-    Ops.SIN: lambda x, dtype: f"{add_parens(rust_cast(x, dtype))}.sin()",
+    #Ops.EXP2: lambda x, dtype: f"{add_parens(rust_cast(x, dtype))}.exp2()",
+    #Ops.LOG2: lambda x, dtype: f"{add_parens(rust_cast(x, dtype))}.log2()",
+    #Ops.SIN: lambda x, dtype: f"{add_parens(rust_cast(x, dtype))}.sin()",
     Ops.AND: lambda a, b, dtype: f"({a} && {b})" if dtype == dtypes.bool else f"({a} & {b})",
     Ops.OR: lambda a, b, dtype: f"({add_parens(a)} | {add_parens(b)})",
     Ops.ADD: lambda a, b, dtype: f"( {a} || {b} )" if dtype == dtypes.bool else f"({a} - {-int(b)})" if detect_neg_const(b) and dtypes.is_unsigned(dtype) else f"({a}+{rust_cast(b,dtype)})",
@@ -149,7 +150,7 @@ class RustRenderer(CStyleLanguage):
   tweak = {'unsafe': False, 'kernel': {'#![feature(f16)]':False}}
 
   def _render_store(self, d, s) -> str:
-    if DEBUG >= 6: print(f"_render_store()")
+    if os.environ.get("RUSTDEBUG", False): print(f"_render_store()")
     src = self[s]
     src_dtype = s.dtype
     dst = None
@@ -176,7 +177,7 @@ class RustRenderer(CStyleLanguage):
     return f"{dst} = {self.render_cast(src, dst_dtype, src_dtype)};"
 
   def render_index(self, x:str, xdtype:DType, i:str, idtype:DType) -> str:
-    if DEBUG >= 6: print(f"render_index(x={x}, xdtype={xdtype}, i={i}, idtype={idtype}")
+    if os.environ.get("RUSTDEBUG", False): print(f"render_index(x={x}, xdtype={xdtype}, i={i}, idtype={idtype}")
     if xdtype.size < 0:
       if str(i) != "0":
         self.tweak['unsafe'] = True
@@ -184,6 +185,12 @@ class RustRenderer(CStyleLanguage):
       else: return f"*{x}"
     if is_positive_integer(i): return f"{x}[{i}]"
     return f"{x}[{i} as usize]"
+
+  def render_index2(self, x:str, xdtype:DType, i:str, idtype:DType) -> str:
+    if os.environ.get("RUSTDEBUG", False): print(f"render_index(x={x}, xdtype={xdtype}, i={i}, idtype={idtype}")
+    if str(i) != "0":
+      return f"*{x}.add({i}{' as usize' if bool(re.search(r'\D', i)) else ''})"
+    else: return f"*{x}"
 
   def floatx_isolate_array(self, x:str,dtype:DType) -> str:
     match = re.match(r"^([a-zA-Z][a-zA-Z0-9]*\[.*\]).try_into\(\).unwrap\(\)\)$", x.lstrip(f"{self.render_dtype(dtype)}("))
@@ -205,9 +212,9 @@ class RustRenderer(CStyleLanguage):
     return x.replace(f"[{idx}]", f"[{add_parens(idx)}..{add_parens(idx)}+{dst_dtype.count}]")
 
   def render_cast(self, x:str, src_dtype:DType, dst_dtype:DType, bitcast=False, force_cast=False, preservenumber=False) -> str:
-    if DEBUG >= 6: print(f"render_cast(x={x}, src_dtype={src_dtype}, dst_dtype={dst_dtype}, bitcast={bitcast}, force_cast={force_cast}, preservenumber={preservenumber}")
-    if DEBUG >= 6: print(f" isinstance(dst_dtype, PtrDType) {isinstance(dst_dtype, PtrDType)} is_floatx(dst_dtype) {is_floatx(dst_dtype)}")
-    if DEBUG >= 6: print(f" isinstance(src_dtype, PtrDType) {isinstance(src_dtype, PtrDType)} is_floatx(src_dtype) {is_floatx(src_dtype)}")
+    if os.environ.get("RUSTDEBUG", False): print(f"render_cast(x={x}, src_dtype={src_dtype}, dst_dtype={dst_dtype}, bitcast={bitcast}, force_cast={force_cast}, preservenumber={preservenumber}")
+    if os.environ.get("RUSTDEBUG", False): print(f" isinstance(dst_dtype, PtrDType) {isinstance(dst_dtype, PtrDType)} is_floatx(dst_dtype) {is_floatx(dst_dtype)}")
+    if os.environ.get("RUSTDEBUG", False): print(f" isinstance(src_dtype, PtrDType) {isinstance(src_dtype, PtrDType)} is_floatx(src_dtype) {is_floatx(src_dtype)}")
 
     if x is None:
       raise ValueError("x cannot be None")
@@ -242,7 +249,8 @@ class RustRenderer(CStyleLanguage):
         raise
       if isinstance(dtype, PtrDType):
         if self.tweak['unsafe']:
-          buftypes[name] = ("*mut " if mutable else "*const ") + (render_dtype(dtype) if dtype.size == -1 else f"[{render_dtype(dtype)}; {dtype.size}]")
+          buftypes[name] = ("*mut " if mutable else "*const ") + (render_dtype(dtype))
+          #buftypes[name] = ("*mut " if mutable else "*const ") + (render_dtype(dtype) if dtype.size == -1 else f"[{render_dtype(dtype)}; {dtype.size}]")
         else:
           buftypes[name] = ("&mut " if mutable else "&") + (render_dtype(dtype) if dtype.size == -1 else f"[{render_dtype(dtype)}; {dtype.size}]")
       else:
@@ -277,7 +285,7 @@ class RustRenderer(CStyleLanguage):
                   [', '.join([f'{name}: {t}' for name, t in buftypes.items()] + self.extra_args)] +
                   [") {\n"] + ['\n'.join(kernel), "\n}"])
     tweak = {'unsafe': False, 'kernel': {'#![feature(f16)]':False}}
-    if DEBUG >= 6: print(f"prg={prg}")
+    if os.environ.get("RUSTDEBUG", False): print(f"prg={prg}")
     import sys
     sys.stdout.flush()
     return prg if prefix is None else "\n".join(prefix) + f"\n{prg}"

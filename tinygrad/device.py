@@ -296,6 +296,9 @@ class CPUProgram:
       # Using ["name"] instead of .name because otherwise name is getting mangled: https://docs.python.org/3.12/reference/expressions.html#index-5
       CPUProgram.rt_lib["__clear_cache"](ctypes.c_void_p(mv_address(self.mem)), ctypes.c_void_p(mv_address(self.mem) + len(lib)))
 
+      print(f"lib[0..128]: {lib[:128]}")
+      print(f"self.mem: {self.mem}")
+      print(f"self.mem address: {mv_address(self.mem)}")
       self.fxn = ctypes.CFUNCTYPE(None)(mv_address(self.mem))
 
   def __call__(self, *bufs, vals=(), wait=False):
@@ -306,6 +309,8 @@ class CPUProgram:
     # This hack is required because clang/llvm bug doesn't allow us to just use {host's triple}+'-elf' (relocation failures)
     # The bug was fixed in https://github.com/llvm/llvm-project/commit/454cc36630296262cdb6360b60f90a64a97f7f1a but was only backported to xcode 16+
     if platform.machine() == "arm64" and OSX: args = args[:8] + [ctypes.c_int64(a) if isinstance(a, int) else a for a in args[8:]]
+    
+  
     return cpu_time_execution(lambda: self.fxn(*args), enable=wait)
 
   def __del__(self):
