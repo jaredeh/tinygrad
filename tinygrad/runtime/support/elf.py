@@ -19,6 +19,7 @@ def elf_loader(blob:bytes, force_section_align:int=1) -> tuple[memoryview, list[
   rela = [(sh, sh.name[5:], _to_carray(sh, libc.Elf64_Rela)) for sh in sections if sh.header.sh_type == libc.SHT_RELA]
   symtab = [_to_carray(sh, libc.Elf64_Sym) for sh in sections if sh.header.sh_type == libc.SHT_SYMTAB][0]
   progbits = [sh for sh in sections if sh.header.sh_type == libc.SHT_PROGBITS]
+  progbits.sort(key=lambda sh: (not sh.name.startswith(".text"), sh.header.sh_addralign))
 
   # Prealloc image for all fixed addresses.
   image = bytearray(max([sh.header.sh_addr + sh.header.sh_size for sh in progbits if sh.header.sh_addr != 0] + [0]))
