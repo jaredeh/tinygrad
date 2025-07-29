@@ -72,8 +72,7 @@ def rust_cast(x:str, dst_dtype:DType, src_dtype:DType=None, force_cast=False, id
   return f"{val} as {render_dtype(dst_dtype)}" if force_cast else val
 
 rust_rewrite = PatternMatcher([
-  (UPat(Ops.DEFINE_REG, name="x"), lambda ctx, x: f"let mut {ctx[x]}:{render_dtype(x.dtype)} = {ctx[x.src[0]]}"),
-  (UPat(Ops.ASSIGN, name="x"), lambda ctx, x: f"{ctx[x.src[0]]} = {ctx[x.src[1]]};"),
+  (UPat(Ops.DEFINE_REG, name="x"), lambda ctx, x: f"let mut {ctx[x]}:{render_dtype(x.dtype)};" if not isinstance(x.dtype, PtrDType) else f"let mut {ctx[x]}:[{render_dtype(x.dtype)}; {x.dtype.size}] = [{f'0.0_{ctx.render_dtype(x.dtype.base)}' if dtypes.is_float(x.dtype.base) else '0'}; {x.dtype.size}];"),
   (UPat(Ops.IF, name="x"), lambda ctx, x: f"if {ctx[x.src[0]]} {{"),
   (UPat((Ops.ENDIF, Ops.ENDRANGE)), lambda ctx: "}"),
   (UPat(Ops.WMMA, name="x"), lambda ctx,x: f"__{x.arg[0]}({ctx[x.src[0]]}, {ctx[x.src[1]]}, {ctx[x.src[2]]})"),
