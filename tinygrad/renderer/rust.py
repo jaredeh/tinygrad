@@ -79,7 +79,6 @@ rust_rewrite = PatternMatcher([
   (UPat(Ops.BITCAST, name="x"), lambda ctx, x: f"{ctx.render_cast(ctx[x.src[0]], x.src[0].dtype, x.dtype, bitcast=True)}"),
   (UPat(Ops.DEFINE_LOCAL, name="x"), lambda ctx, x: f"let mut {ctx[x]} = [{f'0.0_{ctx.render_dtype(x.dtype.base)}' if dtypes.is_float(x.dtype.base) else '0'}; {x.dtype.size}];"),
   (UPat(Ops.BARRIER), lambda ctx: ctx.barrier),
-  #(UPat(Ops.WHERE, name="x"), lambda ctx, x: f"(if {ctx[x.src[0]]} {{ {ctx.render_cast(ctx[x.src[1]], x.src[1].dtype, x.dtype)} }} else {{ {ctx.render_cast(ctx[x.src[2]], x.src[2].dtype, x.dtype)} }})"),
   (UPat(Ops.WHERE, name="x"), lambda ctx, x: f"(match {ctx[x.src[0]]} {{ true => {ctx.render_cast(ctx[x.src[1]], x.src[1].dtype, x.dtype)}, false => {ctx.render_cast(ctx[x.src[2]], x.src[2].dtype, x.dtype)} }})"),
   (UPat(Ops.XOR, name="x"), lambda ctx, x: f"({ctx[x.src[0]]} ^ {ctx.render_cast(ctx[x.src[1]], x.src[1].dtype, x.dtype)})"),
   (UPat(Ops.SPECIAL, name="x"), lambda ctx,x: f"x.arg[0][0]={x.arg[0][0]} x.arg[0][-1]={x.arg[0][-1]}; /* {x.arg[1]} {x.flargp} */"),
@@ -101,12 +100,6 @@ rust_rewrite = PatternMatcher([
       *([strip_parens(ctx[v]) if v.op == x.op and x.op in {Ops.ADD, Ops.MUL, Ops.XOR, Ops.OR, Ops.AND} else ctx[v] for v in x.src]), x.dtype)),
   (UPat(Ops.GEP, name="x"), lambda ctx,x: ctx[x.src[0]] + \
     (f".0[{x.arg[0]}]" if is_floatx(x.src[0].dtype) else f"[{x.arg[0]}]")),
-])
-
-rust_extra_pm = PatternMatcher([
-  (UPat(Ops.BITCAST, name="x"),
-    lambda x: UOp(Ops.BITCAST, x.dtype, (UOp(Ops.NOOP, x.src[0].dtype, x.src),)) if x.src[0].op not in {Ops.NOOP, Ops.LOAD, Ops.CUSTOM} else None),
-  (UPat(Ops.MAX, name="m"), lambda m: (m.src[0] < m.src[1]).where(m.src[1], m.src[0])),
 ])
 
 def uops_to_dtypes(uops: List[UOp]) -> List[DType]:
@@ -137,7 +130,6 @@ class RustRenderer(CStyleLanguage):
     Ops.CMPLT: lambda a, b, dtype: f"({add_parens(a, on_cast=True)} < {add_parens(b, on_cast=True)})"
   }
   string_rewrite = rust_rewrite
-  #extra_matcher = rust_extra_pm
 
   def _render_store(self, d, s) -> str:
     if os.environ.get("RUSTDEBUG", False): print(f"_render_store()")
@@ -161,7 +153,6 @@ class RustRenderer(CStyleLanguage):
       return f"{dst}.copy_from_slice(&{self.render_cast(src, d.dtype, src_dtype)}.0);"
     except:
       dst = self[d]
-    #f"{'*' if bidx.dtype.size == -1 else ''}{ctx[bidx]} = {ctx.render_cast(ctx[var], bidx.dtype, var.dtype)};"
     if is_floatx(src_dtype) and dst.startswith(self.render_dtype(src_dtype)):
       return f"{self.floatx_isolate_array(dst, src_dtype)}.copy_from_slice(&{self.render_cast(src, dst_dtype, src_dtype)}.0);"
     return f"{dst} = {self.render_cast(src, dst_dtype, src_dtype)};"

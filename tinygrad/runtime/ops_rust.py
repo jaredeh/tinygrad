@@ -13,14 +13,7 @@ class RustJITCompiler(Compiler):
     args = ["--edition=2021", "-Aunused_parens", "-Aunused_mut", "-Aunused-variables", "-C", "opt-level=3", "-C", "target-cpu=native", "-C", "debuginfo=0", "--crate-type=cdylib", "--emit=obj",
             "-C", "panic=abort"]
     obj = subprocess.check_output(['rustc', *args, '-o', '-', '-'], input=src.encode('utf-8'))
-    print(f"Compiled {len(obj)} bytes")
-    print(f"obj[0:128]: {obj[:128]}")
-    with open("test.o", "wb") as f:
-      f.write(obj)
-    j = jit_loader(obj)
-    with open("testj.o", "wb") as f:
-      f.write(j)
-    return j
+    return jit_loader(obj)
 
   def disassemble(self, lib:bytes): return capstone_flatdump(lib)
 
