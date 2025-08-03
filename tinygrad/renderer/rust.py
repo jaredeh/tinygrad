@@ -227,7 +227,8 @@ class RustRenderer(CStyleLanguage):
         print(f"warning: buffer {name} is already defined {name} {dtype} {mutable} ")
         raise
       if isinstance(dtype, PtrDType):
-        if unsafe:
+        if dtype.size == -1:
+          unsafe = True
           buftypes[name] = ("*mut " if mutable else "*const ") + (render_dtype(dtype) if dtype.size == -1 else f"[{render_dtype(dtype)}; {dtype.size}]")
         else:
           buftypes[name] = ("&mut " if mutable else "&") + (render_dtype(dtype) if dtype.size == -1 else f"[{render_dtype(dtype)}; {dtype.size}]")
@@ -249,6 +250,7 @@ class RustRenderer(CStyleLanguage):
     # Walk uops graph to check for features and struct defs
     struct_defs = set()
     features = set()
+    #features.add("#![no_builtins]\n")
     for dt in uops_to_dtypes(uops):
       # emit struct types like Float32x4 etc if needed
       if dt.count > 1:

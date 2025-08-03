@@ -19,7 +19,7 @@ def elf_loader(blob:bytes, force_section_align:int=1) -> tuple[memoryview, list[
   rela = [(sh, sh.name[5:], _to_carray(sh, libc.Elf64_Rela)) for sh in sections if sh.header.sh_type == libc.SHT_RELA]
   symtab = [_to_carray(sh, libc.Elf64_Sym) for sh in sections if sh.header.sh_type == libc.SHT_SYMTAB][0]
   progbits = [sh for sh in sections if sh.header.sh_type == libc.SHT_PROGBITS]
-  progbits.sort(key=lambda sh: (not sh.name.startswith(".text"), sh.header.sh_addralign))
+  progbits.sort(key=lambda sh: ((sh.header.sh_flags & libc.SHF_EXECINSTR) == 0, -sh.header.sh_size)) # biggest executable sections first
 
   # Prealloc image for all fixed addresses.
   image = bytearray(max([sh.header.sh_addr + sh.header.sh_size for sh in progbits if sh.header.sh_addr != 0] + [0]))
@@ -32,8 +32,10 @@ def elf_loader(blob:bytes, force_section_align:int=1) -> tuple[memoryview, list[
   # Relocations
   relocs = []
   for sh, trgt_sh_name, c_rels in rel + rela:
+    if next(tsh for tsh in sections if tsh.name == trgt_sh_name).header.sh_type != libc.SHT_PROGBITS: continue # skip invalid relocations
     target_image_off = next(tsh for tsh in sections if tsh.name == trgt_sh_name).header.sh_addr
     rels = [(r.r_offset, symtab[libc.ELF64_R_SYM(r.r_info)], libc.ELF64_R_TYPE(r.r_info), getattr(r, "r_addend", 0)) for r in c_rels]
+    #rels = [r for r in rels if r[2] not in [9]] # filter out 
     for roff, sym, r_type_, r_addend in rels:
       if sym.st_shndx == 0: raise RuntimeError(f'Attempting to relocate against an undefined symbol {repr(_strtab(sh_strtab, sym.st_name))}')
     relocs += [(target_image_off + roff, sections[sym.st_shndx].header.sh_addr + sym.st_value, rtype, raddend) for roff, sym, rtype, raddend in rels]
@@ -43,7 +45,9 @@ def elf_loader(blob:bytes, force_section_align:int=1) -> tuple[memoryview, list[
 def relocate(instr: int, ploc: int, tgt: int, r_type: int):
   match r_type:
     # https://refspecs.linuxfoundation.org/elf/x86_64-abi-0.95.pdf
+    case libc.R_X86_64_64: return i2u(32, tgt-ploc)
     case libc.R_X86_64_PC32: return i2u(32, tgt-ploc)
+    case libc.R_X86_64_GOTPCREL: return i2u(32, tgt-ploc)
     # https://github.com/ARM-software/abi-aa/blob/main/aaelf64/aaelf64.rst for definitions of relocations
     # https://www.scs.stanford.edu/~zyedidia/arm64/index.html for instruction encodings
     case libc.R_AARCH64_ADR_PREL_PG_HI21:
